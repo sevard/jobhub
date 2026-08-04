@@ -1,11 +1,12 @@
 import json
 import os
 import sys
+import uuid
 from pathlib import Path
 from typing import List
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -13,8 +14,7 @@ BASE_DIR = Path(__file__).resolve().parents[1]
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
-# Import the database functions after modifying sys.path
-from api.db import delete_message, init_db, list_messages, save_message
+from api.db import delete_message, get_message_session_id, init_db, list_messages, save_message
 
 is_development = os.getenv("APP_ENV", "production").lower() == "development"
 
@@ -33,12 +33,14 @@ class ConnectionManager:
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
         self.active_connections.append(websocket)
-        print(f"Client connected: {id(websocket)} (active: {len(self.active_connections)})")
+        print(
+            f"Client connected: {id(websocket)} (active: {len(self.active_connections)})")
 
     def disconnect(self, websocket: WebSocket):
         if websocket in self.active_connections:
             self.active_connections.remove(websocket)
-            print(f"Client disconnected: {id(websocket)} (active: {len(self.active_connections)})")
+            print(
+                f"Client disconnected: {id(websocket)} (active: {len(self.active_connections)})")
 
     async def broadcast(self, message: str):
         for connection in self.active_connections.copy():
@@ -77,21 +79,45 @@ async def health():
 
 
 @app.get("/get_message")
-async def messages():
-    return {"messages": list_messages()}
+async def messages(request: Request, response: Response):
+    session_id = request.cookies.get("session_id")
+    if not session_id:
+        session_id = str(uuid.uuid4())
+        response.set_cookie(key="session_id", value=session_id)
+
+    return {
+        "messages": list_messages(),
+        "my_session_id": session_id
+    }
 
 
 @app.post("/post_message")
-async def create_message(payload: MessagePayload):
-    new_id = save_message(payload.content)
+async def create_message(payload: MessagePayload, request: Request, response: Response):
+    session_id = request.cookies.get("session_id")
+    if not session_id:
+        session_id = str(uuid.uuid4())
+        response.set_cookie(key="session_id", value=session_id)
+
+    new_id = save_message(session_id, payload.content)
     await manager.broadcast(
-        json.dumps({"type": "message", "id": new_id, "content": payload.content})
+        json.dumps({"type": "message", "id": new_id,
+                   "session_id": session_id, "content": payload.content})
     )
     return {"status": "ok", "id": new_id}
 
 
 @app.delete("/delete_message/{message_id}")
-async def remove_message(message_id: int):
+async def remove_message(message_id: int, request: Request):
+    session_id = request.cookies.get("session_id")
+    message_session = get_message_session_id(message_id)
+
+    if not message_session:
+        raise HTTPException(status_code=404, detail="Message not found")
+
+    if session_id != message_session:
+        raise HTTPException(
+            status_code=403, detail="Not authorized to delete this message")
+
     if not delete_message(message_id):
         raise HTTPException(status_code=404, detail="Message not found")
     await manager.broadcast(json.dumps({"type": "delete", "id": message_id}))
@@ -100,6 +126,9 @@ async def remove_message(message_id: int):
 
 async def _websocket_relay_impl(websocket: WebSocket):
     await manager.connect(websocket)
+    # The websocket connect doesn't automatically issue new session_ids since it's hard to set cookies mid-upgrade,
+    # but the browser will send the existing session_id cookie if it has one. For pure relay, we just
+    # broadcast whatever comes in, though in the UI we no longer send from websockets anyway.
     try:
         while True:
             incoming = await websocket.receive_text()
@@ -107,9 +136,15 @@ async def _websocket_relay_impl(websocket: WebSocket):
                 normalized = json.dumps(json.loads(incoming))
             except json.JSONDecodeError:
                 normalized = incoming
-            new_id = save_message(normalized)
+
+            # Since pure websocket clients might not have a session cookie handled by request.cookies,
+            # we assign a fallback anonymous session_id just for websocket-originated saves.
+            ws_session_id = websocket.cookies.get(
+                "session_id", str(uuid.uuid4()))
+            new_id = save_message(ws_session_id, normalized)
             await manager.broadcast(
-                json.dumps({"type": "message", "id": new_id, "content": normalized})
+                json.dumps({"type": "message", "id": new_id,
+                           "session_id": ws_session_id, "content": normalized})
             )
     except WebSocketDisconnect:
         manager.disconnect(websocket)
@@ -117,11 +152,6 @@ async def _websocket_relay_impl(websocket: WebSocket):
 
 @app.websocket("/ws")
 async def websocket_relay(websocket: WebSocket):
-    await _websocket_relay_impl(websocket)
-
-
-@app.websocket("/ws/")
-async def websocket_relay_slash(websocket: WebSocket):
     await _websocket_relay_impl(websocket)
 
 
