@@ -12,6 +12,7 @@ def init_db() -> None:
         """
         CREATE TABLE IF NOT EXISTS messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
             content TEXT NOT NULL,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
@@ -20,10 +21,10 @@ def init_db() -> None:
     CONNECTION.commit()
 
 
-def save_message(message: str) -> int:
+def save_message(session_id: str, message: str) -> int:
     cursor = CONNECTION.execute(
-        "INSERT INTO messages (content) VALUES (?)",
-        (message,),
+        "INSERT INTO messages (session_id, content) VALUES (?, ?)",
+        (session_id, message),
     )
     CONNECTION.commit()
     return cursor.lastrowid
@@ -31,9 +32,14 @@ def save_message(message: str) -> int:
 
 def list_messages() -> List[dict]:
     rows = CONNECTION.execute(
-        "SELECT id, content FROM messages ORDER BY id DESC"
+        "SELECT id, session_id, content FROM messages ORDER BY id DESC"
     ).fetchall()
-    return [{"id": row[0], "content": row[1]} for row in rows]
+    return [{"id": row[0], "session_id": row[1], "content": row[2]} for row in rows]
+
+
+def get_message_session_id(message_id: int) -> str:
+    row = CONNECTION.execute("SELECT session_id FROM messages WHERE id = ?", (message_id,)).fetchone()
+    return row[0] if row else None
 
 
 def delete_message(message_id: int) -> bool:

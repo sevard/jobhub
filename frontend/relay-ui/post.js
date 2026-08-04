@@ -52,8 +52,11 @@ async function loadMessageHistory() {
     try {
         const response = await fetch(`${API_BASE}/get_message`);
         const data = await response.json();
-        // list_messages returns newest first, matching how authoredMessages is ordered
-        authoredMessages.push(...(data.messages || []));
+        // Only show messages posted by this browser's session, matching the delete authorization rule
+        const ownMessages = (data.messages || []).filter(
+            (msg) => msg.session_id === data.my_session_id
+        );
+        authoredMessages.push(...ownMessages);
         renderMessages();
     } catch (error) {
         console.error("Unable to load message history", error);
