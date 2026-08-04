@@ -1,4 +1,3 @@
-from api.db import delete_message, get_message_session_id, init_db, list_messages, save_message
 import json
 import os
 import sys
@@ -16,6 +15,7 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 # Import the database functions after modifying sys.path
+from api.db import delete_message, get_message_session_id, init_db, list_messages, save_message
 
 is_development = os.getenv("APP_ENV", "production").lower() == "development"
 
