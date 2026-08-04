@@ -3,17 +3,16 @@
 ## Project overview
 This repository is a small web app with:
 - a Python FastAPI backend in api/app.py
-- a static frontend in frontend/relay-ui/ using plain HTML and CSS
+- a static frontend in frontend/relay-ui/ using plain HTML and CSS, served by the backend under /ui
 
 ## Build and run rules
 - Use Python 3.14+ as declared in pyproject.toml.
 - Always use uv for Python package management and project commands.
+- In development, use hot reload for the backend.
 - Backend entrypoint: api/app.py
-- Run the backend with:
+- Run the app with:
   - `uv run uvicorn api.app:app --host 0.0.0.0 --port 8001 --reload`
-- Run the frontend with:
-  - `uv run python -m http.server 8000`
-  - then open http://127.0.0.1:8000/frontend/relay-ui/
+  - then open http://127.0.0.1:8001/ui/index.html
 
 ## Architecture guidance
 - Keep the backend as a lightweight FastAPI websocket relay.
@@ -21,7 +20,7 @@ This repository is a small web app with:
   - `/ws`
   - `/ws/`
 - Preserve the existing health and root endpoints.
-- Keep the frontend dependency-free and static unless a strong reason requires otherwise.
+- The frontend is mounted as static files at /ui; keep it dependency-free and static unless a strong reason requires otherwise.
 
 ## Change guidelines
 - Prefer small, targeted changes over large rewrites.
@@ -31,5 +30,5 @@ This repository is a small web app with:
 
 ## Validation expectations
 - Verify backend changes by starting the app and checking the health endpoint.
-- Verify UI changes by serving the frontend locally and opening the relay UI page.
+- Verify UI changes by opening http://127.0.0.1:8001/ui/index.html after starting the backend.
 - After confirming the backend or frontend works, shut the local server down before finishing.

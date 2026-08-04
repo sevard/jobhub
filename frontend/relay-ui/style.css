@@ -1,10 +1,7 @@
 :root {
   --bg: #f5f7fb;
-  --panel: #ffffff;
   --text: #1f2937;
-  --accent: #0f766e;
   --muted: #6b7280;
-  --border: #e5e7eb;
 }
 
 body {
@@ -17,19 +14,19 @@ body {
   font-size: 14px;
 }
 
-#messages {
+.message-list {
   margin: 0;
   padding: 0;
   list-style: none;
-  min-height: 160px;
+  min-height: 180px;
 }
 
-#messages li {
+.message-list li {
   border-bottom: 1px solid #f1f5f9;
-  padding: 6px 4px;
+  padding: 10px 0;
   word-break: break-word;
 }
 
-#messages li:last-child {
+.message-list li:last-child {
   border-bottom: 0;
 }
