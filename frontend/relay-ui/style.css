@@ -1,0 +1,35 @@
+:root {
+  --bg: #f5f7fb;
+  --panel: #ffffff;
+  --text: #1f2937;
+  --accent: #0f766e;
+  --muted: #6b7280;
+  --border: #e5e7eb;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+}
+
+#status {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+#messages {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  min-height: 160px;
+}
+
+#messages li {
+  border-bottom: 1px solid #f1f5f9;
+  padding: 6px 4px;
+  word-break: break-word;
+}
+
+#messages li:last-child {
+  border-bottom: 0;
+}
