@@ -3,24 +3,23 @@
 ## Project overview
 This repository is a small web app with:
 - a Python FastAPI backend in api/app.py
-- a static frontend in frontend/relay-ui/ using plain HTML and CSS, served by the backend under /ui
+- a frontend in ui/ using Jinja2 templates and CSS, rendered by the backend under /ui
 
 ## Build and run rules
 - Use Python 3.14+ as declared in pyproject.toml.
 - Always use uv for Python package management and project commands.
 - In development, use hot reload for the backend.
 - Backend entrypoint: api/app.py
-- Run the app with:
-  - `uv run uvicorn api.app:app --host 0.0.0.0 --port 8001 --reload`
+- Run the app as a module so absolute imports work correctly:
+  - `uv run python -m api.app`
   - then open http://127.0.0.1:8001/ui/index.html
 
 ## Architecture guidance
 - Keep the backend as a lightweight FastAPI websocket relay.
-- Preserve the existing websocket endpoints:
+- Preserve the existing websocket endpoint:
   - `/ws`
-  - `/ws/`
 - Preserve the existing health and root endpoints.
-- The frontend is mounted as static files at /ui; keep it dependency-free and static unless a strong reason requires otherwise.
+- Serve the frontend via `from fastapi.templating import Jinja2Templates` rather than a static files mount; use Jinja2 templates for all pages, including loops/conditionals (e.g. message lists), rather than hand-building HTML strings.
 
 ## Change guidelines
 - Prefer small, targeted changes over large rewrites.

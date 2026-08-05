@@ -1,36 +1,42 @@
 const messagesEl = document.getElementById("messages");
-const API_BASE = "";
+const messageTemplate = document.getElementById("message-template");
+const API_BASE = "/api";
+
 // The WebSocket URL is constructed based on the current page's protocol and host.
 const WS_URL = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`;
 
-function addMessage(id, text) {
-    const li = document.createElement("li");
+function buildMessageItem(id, text) {
+    const fragment = messageTemplate.content.cloneNode(true);
+    const li = fragment.querySelector("li");
+    const link = fragment.querySelector("a.message-link");
     li.dataset.id = id;
-    li.textContent = text;
-    messagesEl.prepend(li);
-}
-
-function removeMessage(id) {
-    const li = messagesEl.querySelector(`[data-id="${id}"]`);
-    if (li) { 
-        li.remove();
-    }
+    link.href = `#message-${id}`;
+    link.textContent = text;
+    return li;
 }
 
 async function loadMessageHistory() {
     try {
         const response = await fetch(`${API_BASE}/get_message`);
         const data = await response.json();
-        // list_messages returns newest first
-        // append in that order to keep newest on top
-        (data.messages || []).forEach((msg) => {
-            const li = document.createElement("li");
-            li.dataset.id = msg.id;
-            li.textContent = msg.content;
-            messagesEl.appendChild(li);
-        });
+        const messages = data.messages || [];
+        // list_messages returns newest first; append in that order to keep newest on top
+        for (const msg of messages) {
+            messagesEl.appendChild(buildMessageItem(msg.id, msg.content));
+        }
     } catch (error) {
         console.error("Unable to load message history", error);
+    }
+}
+
+function addMessage(id, text) {
+    messagesEl.prepend(buildMessageItem(id, text));
+}
+
+function removeMessage(id) {
+    const li = messagesEl.querySelector(`[data-id="${id}"]`);
+    if (li) { 
+        li.remove();
     }
 }
 

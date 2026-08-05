@@ -1,4 +1,15 @@
-# Running tests
+# Commands how to run server and execute tests
+
+## Running server
+
+Run the test suite from the project root with:
+
+```bash
+uv run python -m api.app
+    
+```
+
+## Running tests
 
 Run the test suite from the project root with:
 

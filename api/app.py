@@ -8,13 +8,9 @@ from typing import List
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-BASE_DIR = Path(__file__).resolve().parents[1]
-if str(BASE_DIR) not in sys.path:
-    sys.path.insert(0, str(BASE_DIR))
-
-# Import the database functions after modifying sys.path
 from api.db import delete_message, get_message_session_id, init_db, list_messages, save_message
 
 is_development = os.getenv("APP_ENV", "production").lower() == "development"
@@ -22,9 +18,15 @@ is_development = os.getenv("APP_ENV", "production").lower() == "development"
 app = FastAPI(title="Incoming WebSocket Relay")
 app.state.development_mode = is_development
 
-FRONTEND_DIR = BASE_DIR / "frontend" / "relay-ui"
+BASE_DIR = Path(__file__).resolve().parents[1]
+FRONTEND_DIR = BASE_DIR / "ui"
+templates = Jinja2Templates(directory=FRONTEND_DIR / "templates")
 
 init_db()
+
+
+class MessagePayload(BaseModel):
+    content: str
 
 
 class ConnectionManager:
@@ -54,45 +56,60 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
-@app.get("/")
+@app.get("/api/health")
+async def health():
+    return {"status": "ok"}
+
+
+@app.get("/api/info")
 async def root():
     return {
         "service": "relay-backend",
         "status": "running",
-        "websocket_endpoints": ["/ws", "/ws/"],
+        "websocket_endpoints": ["/ws"],
         "development_mode": app.state.development_mode,
         "note": "Websocket relay that broadcasts messages to all connected clients.",
     }
 
 
-@app.get("/favicon.ico", include_in_schema=False)
-async def favicon() -> None:
-    return None
+@app.get("/", include_in_schema=False)
+@app.get("/ui/index.html", include_in_schema=False)
+async def ui_index(request: Request):
+    return templates.TemplateResponse(request, "index.html")
 
 
-class MessagePayload(BaseModel):
-    content: str
+@app.get("/post", include_in_schema=False)
+@app.get("/ui/post.html", include_in_schema=False)
+async def ui_post(request: Request):
+    return templates.TemplateResponse(request, "post.html")
 
 
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
+@app.get("/feed", include_in_schema=False)
+@app.get("/ui/feed.html", include_in_schema=False)
+async def ui_feed(request: Request):
+    return templates.TemplateResponse(request, "feed.html")
 
 
-@app.get("/get_message")
-async def messages(request: Request, response: Response):
+@app.get("/api/get_message")
+async def messages(request: Request, response: Response, own_only: bool = False):
+
     session_id = request.cookies.get("session_id")
     if not session_id:
         session_id = str(uuid.uuid4())
         response.set_cookie(key="session_id", value=session_id)
 
+    if own_only:
+        db_messages = list_messages(session_id)
+    else:
+        db_messages = list_messages()
+
     return {
-        "messages": list_messages(),
+        "messages": db_messages,
         "my_session_id": session_id
     }
 
 
-@app.post("/post_message")
+@app.post("/api/post_message")
 async def create_message(payload: MessagePayload, request: Request, response: Response):
     session_id = request.cookies.get("session_id")
     if not session_id:
@@ -107,7 +124,7 @@ async def create_message(payload: MessagePayload, request: Request, response: Re
     return {"status": "ok", "id": new_id}
 
 
-@app.delete("/delete_message/{message_id}")
+@app.delete("/api/delete_message/{message_id}")
 async def remove_message(message_id: int, request: Request):
     session_id = request.cookies.get("session_id")
     message_session = get_message_session_id(message_id)
@@ -156,8 +173,8 @@ async def websocket_relay(websocket: WebSocket):
     await _websocket_relay_impl(websocket)
 
 
-# Mounted last so it never shadows the API routes defined above.
-app.mount("/ui", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
+# Mounted last so it never shadows the API/page routes defined above; serves CSS/JS assets only.
+app.mount("/ui/static", StaticFiles(directory=FRONTEND_DIR / "static"), name="static")
 
 
 def run_server() -> None:
