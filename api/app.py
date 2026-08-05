@@ -1,7 +1,9 @@
 import json
+import logging
 import os
 import sys
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import List
 
@@ -13,16 +15,22 @@ from pydantic import BaseModel
 
 from api.db import delete_message, get_message_session_id, init_db, list_messages, save_message
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 is_development = os.getenv("APP_ENV", "production").lower() == "development"
 
-app = FastAPI(title="Incoming WebSocket Relay")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    yield
+
+app = FastAPI(title="Incoming WebSocket Relay", lifespan=lifespan)
 app.state.development_mode = is_development
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 FRONTEND_DIR = BASE_DIR / "ui"
 templates = Jinja2Templates(directory=FRONTEND_DIR / "templates")
-
-init_db()
 
 
 class MessagePayload(BaseModel):
@@ -36,20 +44,24 @@ class ConnectionManager:
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
         self.active_connections.append(websocket)
-        print(
+        logger.info(
             f"Client connected: {id(websocket)} (active: {len(self.active_connections)})")
 
     def disconnect(self, websocket: WebSocket):
         if websocket in self.active_connections:
             self.active_connections.remove(websocket)
-            print(
+            logger.info(
                 f"Client disconnected: {id(websocket)} (active: {len(self.active_connections)})")
 
     async def broadcast(self, message: str):
         for connection in self.active_connections.copy():
             try:
                 await connection.send_text(message)
-            except Exception:
+            except RuntimeError as e:
+                logger.warning(f"Failed to send to client {id(connection)}: {e}")
+                self.disconnect(connection)
+            except Exception as e:
+                logger.error(f"Unexpected error broadcasting to client {id(connection)}: {e}")
                 self.disconnect(connection)
 
 
@@ -94,6 +106,10 @@ async def ui_feed(request: Request):
 async def messages(request: Request, response: Response, own_only: bool = False):
 
     session_id = request.cookies.get("session_id")
+    if own_only and not session_id:
+        raise HTTPException(
+            status_code=400, detail="Session ID cookie is required for own_only=True")
+
     if not session_id:
         session_id = str(uuid.uuid4())
         response.set_cookie(key="session_id", value=session_id)
