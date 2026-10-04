@@ -6,6 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Publisher View</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
     <link rel="stylesheet" href="/ui/static/style.css">
     <link rel="apple-touch-icon" sizes="180x180" href="/ui/static/fav/apple-touch-icon.png">
     <link rel="icon" type="image/png" sizes="32x32" href="/ui/static/fav/favicon-32x32.png">
@@ -24,35 +25,74 @@
             <a class="btn btn-outline-secondary rounded-pill px-3" href="/"">&larr; Back</a>
         </div>
 
-        <div class="card shadow-lg border-0 rounded-4 mb-4">
-            <div class="card-body p-4">
-                <div class="row g-2">
+        <div class="card shadow-lg border-1 rounded-4 mb-4">
+            <div class="card-body p-5">
+                <form id="jobForm">
+                    <!-- Two Column Row for Primary details -->
+                    <div class="row g-4 mb-4">
+                        <div class="col-12">
+                            <div class="form-floating">
+                                <input type="datetime-local" id="pickupTimeInput" class="form-control bg-light border-0 px-4 fw-bold" placeholder="Pickup Time" required>
+                                <label for="pickupTimeInput" class="ms-2 text-muted">Pickup Time</label>
+                            </div>
+                        </div>
 
-                    <div class="col-md-9">
-                        <input id="messageInput" class="form-control rounded-pill px-4" placeholder="Type message">
-                    </div>
-                    <div class="col-md-3">
-                        <button id="sendBtn" class="btn btn-primary rounded-pill w-100" type="button">Send</button>
+                        <div class="col-12">
+                            <div class="form-floating">
+                                <input type="text" id="pickupLocationInput" class="form-control bg-light border-0 px-4 fw-bold" placeholder="Enter pickup address" required>
+                                <label for="pickupLocationInput" class="ms-2 text-muted">Pickup Location</label>
+                            </div>
+                        </div>
                     </div>
 
-                </div>
+                    <!-- Dropoff and Note Row -->
+                    <div class="row g-4 mb-4">
+                        <div class="col-12">
+                            <div class="form-floating">
+                                <input type="text" id="dropoffLocationInput" class="form-control bg-light border-0 px-4 fw-bold" placeholder="Enter dropoff address" required>
+                                <label for="dropoffLocationInput" class="ms-2 text-muted">Dropoff Location</label>
+                            </div>
+                        </div>
+                        
+                        <div class="col-12">
+                            <div class="form-floating">
+                                <input type="text" id="noteInput" class="form-control bg-light border-0 px-4 fw-bold" placeholder="Any special instructions?">
+                                <label for="noteInput" class="ms-2 text-muted">Note (optional)</label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Submit Buttons -->
+                    <div class="d-flex justify-content-end gap-3 mt-2 border-top pt-4">
+                        <button id="resetBtn" class="btn btn-light rounded-pill px-4 text-muted fw-medium" type="button">Clear form</button>
+                        <button id="sendBtn" class="btn btn-primary rounded-pill px-5 shadow-sm fw-medium" type="submit">Request &rarr; &#128663;</button>
+                    </div>
+                </form>
             </div>
         </div>
 
-        <div class="card shadow-lg border-0 rounded-4">
+        <div class="card shadow-lg border rounded-4">
             <div class="card-body p-4">
 
-                <h2 class="h5 mb-3">Your posted messages</h2>
+                <h2 class="h5 mb-3">Your posted jobs</h2>
 
                 <!-- MESSAGES START -->
                 <ul id="messages" class="list-group list-group-flush feed-list"></ul>
                 <!-- MESSAGES END -->
 
                 <template id="message-template">
-                    <li class="list-group-item message-item d-flex justify-content-between align-items-center gap-3">
-                        <div class="d-flex align-items-center gap-3 flex-grow-1">
-                            <span class="message-avatar" aria-hidden="true">&#128172;</span>
-                            <span class="message-content text-break"></span>
+                    <li class="list-group-item message-item d-flex justify-content-between align-items-start gap-3 py-3">
+                        <div class="d-flex gap-3 flex-grow-1">
+                            <span class="message-avatar mt-1" aria-hidden="true">&#128663;</span>
+                            <div class="message-content text-break">
+                                <strong data-id="timeEl" class="d-block mb-1"></strong>
+                                <div class="small">
+                                    <span class="text-muted">From:</span> <span data-id="pickupEl" class="fw-medium"></span>
+                                    <br>
+                                    <span class="text-muted">To:</span> <span data-id="dropoffEl" class="fw-medium"></span>
+                                </div>
+                                <div data-id="noteEl" class="text-muted small mt-1 fst-italic"></div>
+                            </div>
                         </div>
                         <button type="button" class="btn btn-sm btn-outline-danger rounded-pill px-3 delete-btn">Delete</button>
                     </li>
@@ -62,6 +102,7 @@
         </div>
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
     <script src="/ui/static/post.js"></script>
 </body>
 

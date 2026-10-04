@@ -10,10 +10,13 @@ CONNECTION = sqlite3.connect(DB_PATH, check_same_thread=False)
 def init_db() -> None:
     CONNECTION.execute(
         """
-        CREATE TABLE IF NOT EXISTS messages (
+        CREATE TABLE IF NOT EXISTS jobs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             session_id TEXT NOT NULL,
-            content TEXT NOT NULL,
+            pickup_time DATETIME NOT NULL,
+            pickup_location TEXT NOT NULL,
+            dropoff_location TEXT NOT NULL,
+            note TEXT,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
         """
@@ -21,10 +24,10 @@ def init_db() -> None:
     CONNECTION.commit()
 
 
-def save_message(session_id: str, message: str) -> int:
+def save_job(session_id: str, pickup_time: str, pickup_location: str, dropoff_location: str, note: str = "") -> int:
     cursor = CONNECTION.execute(
-        "INSERT INTO messages (session_id, content) VALUES (?, ?)",
-        (session_id, message),
+        "INSERT INTO jobs (session_id, pickup_time, pickup_location, dropoff_location, note) VALUES (?, ?, ?, ?, ?)",
+        (session_id, pickup_time, pickup_location, dropoff_location, note),
     )
     CONNECTION.commit()
 
@@ -33,26 +36,33 @@ def save_message(session_id: str, message: str) -> int:
     return cursor.lastrowid
 
 
-def list_messages(session_id: Optional[str] = None) -> List[dict]:
+def list_jobs(session_id: Optional[str] = None) -> List[dict]:
 
-    statement = "SELECT id, session_id, content FROM messages ORDER BY id DESC"
+    statement = "SELECT id, session_id, pickup_time, pickup_location, dropoff_location, note FROM jobs ORDER BY id DESC"
     params = ()
     if session_id is not None:
-        statement = "SELECT id, session_id, content FROM messages WHERE session_id = ? ORDER BY id DESC"
+        statement = "SELECT id, session_id, pickup_time, pickup_location, dropoff_location, note FROM jobs WHERE session_id = ? ORDER BY id DESC"
         params = (session_id,)
 
     rows = CONNECTION.execute(statement, params).fetchall()
-    return [{"id": row[0], "session_id": row[1], "content": row[2]} for row in rows]
+    return [{
+        "id": row[0],
+        "session_id": row[1],
+        "pickup_time": row[2],
+        "pickup_location": row[3],
+        "dropoff_location": row[4],
+        "note": row[5]
+    } for row in rows]
 
 
-def get_message_session_id(message_id: int) -> Optional[str]:
+def get_job_session_id(job_id: int) -> Optional[str]:
     row = CONNECTION.execute(
-        "SELECT session_id FROM messages WHERE id = ?", (message_id,)).fetchone()
+        "SELECT session_id FROM jobs WHERE id = ?", (job_id,)).fetchone()
     return row[0] if row else None
 
 
-def delete_message(message_id: int) -> bool:
+def delete_job(job_id: int) -> bool:
     cursor = CONNECTION.execute(
-        "DELETE FROM messages WHERE id = ?", (message_id,))
+        "DELETE FROM jobs WHERE id = ?", (job_id,))
     CONNECTION.commit()
     return cursor.rowcount > 0

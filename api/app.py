@@ -1,19 +1,19 @@
 import json
 import logging
 import os
-import sys
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import List
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, Response, WebSocket
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-from api.db import delete_message, get_message_session_id, init_db, list_messages, save_message
+from api.db import delete_job, get_job_session_id, init_db, list_jobs, save_job
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -33,8 +33,11 @@ FRONTEND_DIR = BASE_DIR / "ui"
 templates = Jinja2Templates(directory=FRONTEND_DIR / "templates")
 
 
-class MessagePayload(BaseModel):
-    content: str
+class JobPayload(BaseModel):
+    pickup_time: datetime
+    pickup_location: str
+    dropoff_location: str
+    note: str = ""
 
 
 class ConnectionManager:
@@ -115,9 +118,9 @@ async def messages(request: Request, response: Response, own_only: bool = False)
         response.set_cookie(key="session_id", value=session_id)
 
     if own_only:
-        db_messages = list_messages(session_id)
+        db_messages = list_jobs(session_id)
     else:
-        db_messages = list_messages()
+        db_messages = list_jobs()
 
     return {
         "messages": db_messages,
@@ -126,16 +129,30 @@ async def messages(request: Request, response: Response, own_only: bool = False)
 
 
 @app.post("/api/post_message")
-async def create_message(payload: MessagePayload, request: Request, response: Response):
+async def create_message(payload: JobPayload, request: Request, response: Response):
     session_id = request.cookies.get("session_id")
     if not session_id:
         session_id = str(uuid.uuid4())
         response.set_cookie(key="session_id", value=session_id)
 
-    new_id = save_message(session_id, payload.content)
+    new_id = save_job(
+        session_id, 
+        payload.pickup_time.isoformat(), 
+        payload.pickup_location, 
+        payload.dropoff_location,
+        payload.note
+    )
+    
     await manager.broadcast(
-        json.dumps({"type": "message", "id": new_id,
-                   "session_id": session_id, "content": payload.content})
+        json.dumps({
+            "type": "message", 
+            "id": new_id,
+            "session_id": session_id,
+            "pickup_time": payload.pickup_time.isoformat(),
+            "pickup_location": payload.pickup_location,
+            "dropoff_location": payload.dropoff_location,
+            "note": payload.note
+        })
     )
     return {"status": "ok", "id": new_id}
 
@@ -143,7 +160,7 @@ async def create_message(payload: MessagePayload, request: Request, response: Re
 @app.delete("/api/delete_message/{message_id}")
 async def remove_message(message_id: int, request: Request):
     session_id = request.cookies.get("session_id")
-    message_session = get_message_session_id(message_id)
+    message_session = get_job_session_id(message_id)
 
     if not message_session:
         raise HTTPException(status_code=404, detail="Message not found")
@@ -152,35 +169,21 @@ async def remove_message(message_id: int, request: Request):
         raise HTTPException(
             status_code=403, detail="Not authorized to delete this message")
 
-    if not delete_message(message_id):
+    if not delete_job(message_id):
         raise HTTPException(status_code=404, detail="Message not found")
+
     await manager.broadcast(json.dumps({"type": "delete", "id": message_id}))
     return {"status": "ok"}
 
 
 async def _websocket_relay_impl(websocket: WebSocket):
     await manager.connect(websocket)
-    # The websocket connect doesn't automatically issue new session_ids since it's hard to set cookies mid-upgrade,
-    # but the browser will send the existing session_id cookie if it has one. For pure relay, we just
-    # broadcast whatever comes in, though in the UI we no longer send from websockets anyway.
     try:
         while True:
-            incoming = await websocket.receive_text()
-            try:
-                normalized = json.dumps(json.loads(incoming))
-            except json.JSONDecodeError:
-                normalized = incoming
-
-            # Since pure websocket clients might not have a session cookie handled by request.cookies,
-            # we assign a fallback anonymous session_id just for websocket-originated saves.
-            ws_session_id = websocket.cookies.get(
-                "session_id", str(uuid.uuid4()))
-            new_id = save_message(ws_session_id, normalized)
-            await manager.broadcast(
-                json.dumps({"type": "message", "id": new_id,
-                           "session_id": ws_session_id, "content": normalized})
-            )
-    except WebSocketDisconnect:
+            message = await websocket.receive()
+            if message["type"] == "websocket.disconnect":
+                break
+    finally:
         manager.disconnect(websocket)
 
 

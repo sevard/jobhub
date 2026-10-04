@@ -12,13 +12,18 @@ This repository is a small web app with:
 - Backend entrypoint: api/app.py
 - Run the app as a module so absolute imports work correctly:
   - `uv run python -m api.app`
-  - then open http://127.0.0.1:8001/ui/index.html
+  - then open http://127.0.0.1:8001/
 
 ## Architecture guidance
 - Keep the backend as a lightweight FastAPI websocket relay.
 - Preserve the existing websocket endpoint:
   - `/ws`
-- Preserve the existing health and root endpoints.
+- Preserve the existing backend api endpoints:
+  - `/api/health`
+  - `/api/info`
+  - `/api/get_message`
+  - `/api/post_message`
+  - `/api/delete_message/{message_id}`
 - Serve the frontend via `from fastapi.templating import Jinja2Templates` rather than a static files mount; use Jinja2 templates for all pages, including loops/conditionals (e.g. message lists), rather than hand-building HTML strings.
 
 ## Change guidelines
@@ -29,5 +34,5 @@ This repository is a small web app with:
 
 ## Validation expectations
 - Verify backend changes by starting the app and checking the health endpoint.
-- Verify UI changes by opening http://127.0.0.1:8001/ui/index.html after starting the backend.
+- Verify UI changes by opening http://127.0.0.1:8001/ after starting the backend.
 - After confirming the backend or frontend works, shut the local server down before finishing.

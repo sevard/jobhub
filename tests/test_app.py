@@ -6,7 +6,7 @@ import sqlite3
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 BASE = Path(__file__).resolve().parents[1]
 if str(BASE) not in sys.path:
@@ -72,16 +72,17 @@ class DevelopmentModeTests(unittest.TestCase):
     def test_messages_endpoint_returns_stored_messages(self):
         os.environ["APP_ENV"] = "development"
         app_module = importlib.import_module("api.app")
-        app_module.save_message("test-session", "hello from tests")
+        app_module.init_db()  # Need to make sure DB is initialized since we deleted it
+        app_module.save_job("test-session", "2024-05-15T12:00", "LAX", "San Francisco", "note text")
 
         response = asyncio.run(app_module.messages(_make_request(), _make_response()))
 
         self.assertIn("messages", response)
-        contents = [message["content"] for message in response["messages"]]
-        self.assertIn("hello from tests", contents)
+        contents = [message["pickup_location"] for message in response["messages"]]
+        self.assertIn("LAX", contents)
 
         with sqlite3.connect(DB_PATH) as connection:
-            connection.execute("DELETE FROM messages WHERE content = ?", ("hello from tests",))
+            connection.execute("DELETE FROM jobs WHERE pickup_location = ?", ("LAX",))
 
     def test_create_message_saves_and_broadcasts(self):
         os.environ["APP_ENV"] = "development"
@@ -89,19 +90,27 @@ class DevelopmentModeTests(unittest.TestCase):
         request = _make_request(cookies={"session_id": "session-abc"})
         response = _make_response()
 
-        with patch.object(app_module, "save_message") as save_mock, \
+        with patch.object(app_module, "save_job") as save_mock, \
                 patch.object(app_module.manager, "broadcast") as broadcast_mock:
             save_mock.return_value = 42
-            payload = app_module.MessagePayload(content="posted message")
+            payload = app_module.JobPayload(
+                pickup_time="2026-05-15T12:00:00",
+                pickup_location="SFO",
+                dropoff_location="San Jose",
+                note="Fragile"
+            )
             result = asyncio.run(app_module.create_message(payload, request, response))
 
-        save_mock.assert_called_once_with("session-abc", "posted message")
+        save_mock.assert_called_once_with("session-abc", "2026-05-15T12:00:00", "SFO", "San Jose", "Fragile")
         broadcast_mock.assert_called_once_with(
             json.dumps({
                 "type": "message",
                 "id": 42,
                 "session_id": "session-abc",
-                "content": "posted message",
+                "pickup_time": "2026-05-15T12:00:00",
+                "pickup_location": "SFO",
+                "dropoff_location": "San Jose",
+                "note": "Fragile"
             })
         )
         self.assertEqual(result, {"status": "ok", "id": 42})
@@ -113,21 +122,44 @@ class DevelopmentModeTests(unittest.TestCase):
         request = _make_request()
         response = _make_response()
 
-        with patch.object(app_module, "save_message", return_value=1), \
+        with patch.object(app_module, "save_job", return_value=1), \
                 patch.object(app_module.manager, "broadcast"):
-            payload = app_module.MessagePayload(content="posted message")
+            payload = app_module.JobPayload(
+                pickup_time="2026-05-15T12:00",
+                pickup_location="SFO",
+                dropoff_location="San Jose",
+                note=""
+            )
             asyncio.run(app_module.create_message(payload, request, response))
 
         response.set_cookie.assert_called_once()
         self.assertEqual(response.set_cookie.call_args.kwargs["key"], "session_id")
+
+    def test_websocket_input_does_not_save_or_broadcast_messages(self):
+        os.environ["APP_ENV"] = "development"
+        app_module = importlib.import_module("api.app")
+        websocket = MagicMock()
+        websocket.accept = AsyncMock()
+        websocket.receive = AsyncMock(side_effect=[
+            {"type": "websocket.receive", "text": '{"pickup_location":"SFO"}'},
+            {"type": "websocket.disconnect", "code": 1000},
+        ])
+
+        with patch.object(app_module, "save_job") as save_mock, \
+                patch.object(app_module.manager, "broadcast") as broadcast_mock:
+            asyncio.run(app_module._websocket_relay_impl(websocket))
+
+        save_mock.assert_not_called()
+        broadcast_mock.assert_not_called()
+        self.assertNotIn(websocket, app_module.manager.active_connections)
 
     def test_delete_message_removes_and_broadcasts(self):
         os.environ["APP_ENV"] = "development"
         app_module = importlib.import_module("api.app")
         request = _make_request(cookies={"session_id": "owner-session"})
 
-        with patch.object(app_module, "get_message_session_id", return_value="owner-session"), \
-                patch.object(app_module, "delete_message", return_value=True) as delete_mock, \
+        with patch.object(app_module, "get_job_session_id", return_value="owner-session"), \
+                patch.object(app_module, "delete_job", return_value=True) as delete_mock, \
                 patch.object(app_module.manager, "broadcast") as broadcast_mock:
             response = asyncio.run(app_module.remove_message(7, request))
 
@@ -140,7 +172,7 @@ class DevelopmentModeTests(unittest.TestCase):
         app_module = importlib.import_module("api.app")
         request = _make_request(cookies={"session_id": "owner-session"})
 
-        with patch.object(app_module, "get_message_session_id", return_value=None):
+        with patch.object(app_module, "get_job_session_id", return_value=None):
             with self.assertRaises(app_module.HTTPException) as ctx:
                 asyncio.run(app_module.remove_message(999, request))
 
@@ -151,11 +183,10 @@ class DevelopmentModeTests(unittest.TestCase):
         app_module = importlib.import_module("api.app")
         request = _make_request(cookies={"session_id": "someone-else"})
 
-        with patch.object(app_module, "get_message_session_id", return_value="owner-session"), \
-                patch.object(app_module, "delete_message") as delete_mock:
+        with patch.object(app_module, "get_job_session_id", return_value="owner-session"), \
+                patch.object(app_module, "delete_job") as delete_mock:
             with self.assertRaises(app_module.HTTPException) as ctx:
                 asyncio.run(app_module.remove_message(7, request))
 
         delete_mock.assert_not_called()
         self.assertEqual(ctx.exception.status_code, 403)
-
