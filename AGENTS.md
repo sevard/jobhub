@@ -21,11 +21,11 @@ This repository is a small ride-request board web app with:
 - Preserve the existing backend api endpoints:
   - `/api/health`
   - `/api/info`
-  - `/api/get_message`
-  - `/api/post_message`
-  - `/api/delete_message/{message_id}`
-- Jobs are created only via `/api/post_message`, which must require a valid pickup time and locations.
-- `/api/get_message?own_only=true` is scoped by the `session_id` cookie; without a cookie it must return an empty list, not an error.
+  - `/api/get_jobs`
+  - `/api/post_job`
+  - `/api/delete_job/{message_id}`
+- Jobs are created only via `/api/post_job`, which must require a valid pickup time and locations.
+- `/api/get_jobs?own_only=true` is scoped by the `session_id` cookie; without a cookie it must return an empty list, not an error.
 - Serve the frontend via `from fastapi.templating import Jinja2Templates` rather than a static files mount; use Jinja2 templates for all pages, including loops/conditionals (e.g. message lists), rather than hand-building HTML strings.
 
 ## Change guidelines

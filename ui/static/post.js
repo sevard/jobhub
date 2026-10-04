@@ -18,7 +18,7 @@ flatpickr("#pickupTimeInput", {
 
 async function deleteMessage(id) {
     try {
-        const response = await fetch(`${API_BASE}/delete_message/${id}`, { method: "DELETE" });
+        const response = await fetch(`${API_BASE}/delete_job/${id}`, { method: "DELETE" });
         if (!response.ok) {
             throw new Error("Unable to delete message");
         }
@@ -82,7 +82,7 @@ function buildMessageItem(id, payload) {
 }
 
 async function submitJob(payload) {
-    const response = await fetch(`${API_BASE}/post_message`, {
+    const response = await fetch(`${API_BASE}/post_job`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -139,7 +139,7 @@ if (resetBtn) {
 
 async function loadMessageHistory() {
     try {
-        const response = await fetch(`${API_BASE}/get_message?own_only=true`);
+        const response = await fetch(`${API_BASE}/get_jobs?own_only=true`);
         const data = await response.json();
         const ownMessages = data.messages || [];
         for (const msg of ownMessages) {

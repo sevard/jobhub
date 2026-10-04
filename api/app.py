@@ -88,24 +88,21 @@ async def root():
 
 
 @app.get("/", include_in_schema=False)
-@app.get("/ui/index.html", include_in_schema=False)
 async def ui_index(request: Request):
     return templates.TemplateResponse(request, "index.html")
 
 
 @app.get("/post", include_in_schema=False)
-@app.get("/ui/post.html", include_in_schema=False)
 async def ui_post(request: Request):
     return templates.TemplateResponse(request, "post.html")
 
 
 @app.get("/feed", include_in_schema=False)
-@app.get("/ui/feed.html", include_in_schema=False)
 async def ui_feed(request: Request):
     return templates.TemplateResponse(request, "feed.html")
 
 
-@app.get("/api/get_message")
+@app.get("/api/get_jobs")
 async def messages(request: Request, response: Response, own_only: bool = False):
 
     session_id = request.cookies.get("session_id")
@@ -125,7 +122,7 @@ async def messages(request: Request, response: Response, own_only: bool = False)
     }
 
 
-@app.post("/api/post_message")
+@app.post("/api/post_job")
 async def create_message(payload: JobPayload, request: Request, response: Response):
     session_id = request.cookies.get("session_id")
     if not session_id:
@@ -154,7 +151,7 @@ async def create_message(payload: JobPayload, request: Request, response: Respon
     return {"status": "ok", "id": new_id}
 
 
-@app.delete("/api/delete_message/{message_id}")
+@app.delete("/api/delete_job/{message_id}")
 async def remove_message(message_id: int, request: Request):
     session_id = request.cookies.get("session_id")
     message_session = get_job_session_id(message_id)

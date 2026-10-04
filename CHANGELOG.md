@@ -13,7 +13,7 @@
 - The post page heading is now "Current jobs".
 
 ### Fixed
-- `GET /api/get_message?own_only=true` no longer returns HTTP 400 without a `session_id` cookie. It creates a session and returns an empty list.
+- `GET /api/get_jobs?own_only=true` no longer returns HTTP 400 without a `session_id` cookie. It creates a session and returns an empty list.
 - Malformed `href` on the Back link in `post.html`.
 
 ### Removed

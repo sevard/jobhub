@@ -52,11 +52,11 @@ APP_ENV=development uv run python -m api.app
 | --- | --- | --- |
 | `GET` | `/api/health` | Health check |
 | `GET` | `/api/info` | Service status and WebSocket information |
-| `GET` | `/api/get_message` | List requests; pass `own_only=true` to list only the current session's requests |
-| `POST` | `/api/post_message` | Create a request |
-| `DELETE` | `/api/delete_message/{message_id}` | Delete a request owned by the current session |
+| `GET` | `/api/get_jobs` | List requests; pass `own_only=true` to list only the current session's requests |
+| `POST` | `/api/post_job` | Create a request |
+| `DELETE` | `/api/delete_job/{message_id}` | Delete a request owned by the current session |
 
-Create a request by sending JSON to `/api/post_message`:
+Create a request by sending JSON to `/api/post_job`:
 
 ```json
 {
