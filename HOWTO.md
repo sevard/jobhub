@@ -2,12 +2,13 @@
 
 ## Running server
 
-Run the test suite from the project root with:
+Start the server from the project root with:
 
 ```bash
 uv run python -m api.app
-    
 ```
+
+Then open http://127.0.0.1:8001/ (publisher at `/post`, feed at `/feed`, health check at `/api/health`).
 
 ## Running tests
 
