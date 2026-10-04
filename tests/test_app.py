@@ -84,6 +84,18 @@ class DevelopmentModeTests(unittest.TestCase):
         with sqlite3.connect(DB_PATH) as connection:
             connection.execute("DELETE FROM jobs WHERE pickup_location = ?", ("LAX",))
 
+    def test_messages_own_only_without_cookie_returns_empty_and_sets_cookie(self):
+        os.environ["APP_ENV"] = "development"
+        app_module = importlib.import_module("api.app")
+        app_module.init_db()
+        response = _make_response()
+
+        result = asyncio.run(app_module.messages(_make_request(), response, own_only=True))
+
+        self.assertEqual(result["messages"], [])
+        response.set_cookie.assert_called_once()
+        self.assertEqual(response.set_cookie.call_args.kwargs["key"], "session_id")
+
     def test_create_message_saves_and_broadcasts(self):
         os.environ["APP_ENV"] = "development"
         app_module = importlib.import_module("api.app")

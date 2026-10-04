@@ -109,9 +109,6 @@ async def ui_feed(request: Request):
 async def messages(request: Request, response: Response, own_only: bool = False):
 
     session_id = request.cookies.get("session_id")
-    if own_only and not session_id:
-        raise HTTPException(
-            status_code=400, detail="Session ID cookie is required for own_only=True")
 
     if not session_id:
         session_id = str(uuid.uuid4())
