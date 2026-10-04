@@ -1,7 +1,7 @@
 # AGENTS.md
 
 ## Project overview
-This repository is a small web app with:
+This repository is a small ride-request board web app with:
 - a Python FastAPI backend in api/app.py
 - a frontend in ui/ using Jinja2 templates and CSS, rendered by the backend under /ui
 
@@ -15,15 +15,17 @@ This repository is a small web app with:
   - then open http://127.0.0.1:8001/
 
 ## Architecture guidance
-- Keep the backend as a lightweight FastAPI websocket relay.
+- Keep the backend as a lightweight FastAPI app that stores ride requests ("jobs") in SQLite and broadcasts them over a websocket.
 - Preserve the existing websocket endpoint:
-  - `/ws`
+  - `/ws` (receive-only: it broadcasts events to clients and must never accept or store input)
 - Preserve the existing backend api endpoints:
   - `/api/health`
   - `/api/info`
   - `/api/get_message`
   - `/api/post_message`
   - `/api/delete_message/{message_id}`
+- Jobs are created only via `/api/post_message`, which must require a valid pickup time and locations.
+- `/api/get_message?own_only=true` is scoped by the `session_id` cookie; without a cookie it must return an empty list, not an error.
 - Serve the frontend via `from fastapi.templating import Jinja2Templates` rather than a static files mount; use Jinja2 templates for all pages, including loops/conditionals (e.g. message lists), rather than hand-building HTML strings.
 
 ## Change guidelines
@@ -33,6 +35,7 @@ This repository is a small web app with:
 - When adding features, keep the current simple structure intact.
 
 ## Validation expectations
+- Run the tests with `uv run python -m unittest discover -s tests -q`.
 - Verify backend changes by starting the app and checking the health endpoint.
 - Verify UI changes by opening http://127.0.0.1:8001/ after starting the backend.
 - After confirming the backend or frontend works, shut the local server down before finishing.
