@@ -27,7 +27,7 @@ uv sync
 uv run python -m api.app
 ```
 
-Open <http://127.0.0.1:8001/> in your browser. The server listens on port
+Open <http://127.0.0.1:8001/post> (create jobs) or <http://127.0.0.1:8001/feed> (view jobs) in your browser. The server listens on port
 `8001`. Stop it with `Ctrl+C`.
 
 For development with automatic reload, set `APP_ENV` to `development` before
@@ -41,10 +41,23 @@ APP_ENV=development uv run python -m api.app
 
 | URL | Description |
 | --- | --- |
-| `/` | Home page with links to the publisher and feed |
-| `/post` | Publish a request and manage your own requests |
-| `/feed` | Live feed of requests from all sessions |
+| `/` | Landing page with a login link (redirects to the account home when logged in) |
+| `/account` | Log in or sign up (redirects to the account home when already logged in) |
+| `/account/home` | Redirects a logged-in user to their role's account page (`/account` if logged out) |
+| `/account/dispatcher` | Dispatcher account page, linking to `/post` (other roles are redirected to their own page) |
+| `/account/driver` | Driver account page, linking to `/feed` (other roles are redirected to their own page) |
+| `/post` | Dispatchers only: post requests and see and delete all requests (others are redirected) |
+| `/feed` | Live feed of all requests (login required; redirects to `/account` otherwise) |
 | `/docs` | Interactive FastAPI API documentation |
+
+## Roles
+
+Every account has a role, chosen at sign-up:
+
+- **dispatcher**: can open `/post`, create jobs, and delete any job.
+- **driver**: can browse available jobs at `/feed`; cannot create or delete jobs.
+
+Logged-out visitors and drivers get 401 or 403 from the dispatcher-only API endpoints. Accounts created before roles existed become drivers.
 
 ## HTTP API
 
@@ -52,9 +65,12 @@ APP_ENV=development uv run python -m api.app
 | --- | --- | --- |
 | `GET` | `/api/health` | Health check |
 | `GET` | `/api/info` | Service status and WebSocket information |
-| `GET` | `/api/get_jobs` | List requests; pass `own_only=true` to list only the current session's requests |
-| `POST` | `/api/post_job` | Create a request |
-| `DELETE` | `/api/delete_job/{message_id}` | Delete a request owned by the current session |
+| `GET` | `/api/get_jobs` | List requests (login required) |
+| `POST` | `/api/post_job` | Create a request (dispatchers only) |
+| `DELETE` | `/api/delete_job/{message_id}` | Delete any request (dispatchers only) |
+| `POST` | `/api/signup` | Create an account and log in (username 3-32 letters, digits or `_`; password 8-128 characters; `role` is `dispatcher` or `driver`) |
+| `POST` | `/api/login` | Log in with username and password |
+| `POST` | `/api/logout` | Log out and clear the login cookie |
 
 Create a request by sending JSON to `/api/post_job`:
 
@@ -68,13 +84,12 @@ Create a request by sending JSON to `/api/post_job`:
 ```
 
 `pickup_time`, `pickup_location`, and `dropoff_location` are required.
-`note` is optional and defaults to an empty string. The API sets a `session_id`
-cookie when needed; that cookie is used to scope a user's own requests and to
-authorize deletion.
+`note` is optional and defaults to an empty string. Only dispatchers can create requests; each request records the
+posting account as `user_id`.
 
 ## WebSocket
 
-Connect to `/ws` using `ws://` (or `wss://` when served over HTTPS). Clients
+Connect to `/ws` (logged-in users only; others are closed with code 1008) using `ws://` (or `wss://` when served over HTTPS). Clients
 can receive JSON events when requests are created or deleted. The WebSocket is
 receive-only: client messages are ignored, and requests must be created or
 deleted through the HTTP API. A newly created request is broadcast in this
@@ -84,7 +99,7 @@ shape:
 {
   "type": "message",
   "id": 1,
-  "session_id": "session-id",
+  "user_id": 1,
   "pickup_time": "2026-10-04T15:30:00",
   "pickup_location": "Airport",
   "dropoff_location": "Downtown",

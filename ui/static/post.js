@@ -5,20 +5,53 @@ const dropoffLocationInput = document.getElementById("dropoffLocationInput");
 const noteInput = document.getElementById("noteInput");
 const messagesEl = document.getElementById("messages");
 const messageTemplate = document.getElementById("message-template");
+
 const API_BASE = "/api";
 
 // Initialize Flatpickr for consistent cross-browser datetime picking
-flatpickr("#pickupTimeInput", {
+const pickupPicker = flatpickr("#pickupTimeInput", {
     enableTime: true,
     dateFormat: "Z", // We want the ISO timezone backend timestamp logic under the hood
     altInput: true,
     altFormat: "Y-m-d h:i K", // User facing explicit: 2026-08-12 12:00 PM
-    minDate: "today"
+    minDate: "today",
+    onReady: (selectedDates, dateStr, instance) => {
+        // Flatpickr's calendar controls are generated without id/name
+        const controls = {
+            ".flatpickr-monthDropdown-months": "month",
+            ".cur-year": "year",
+            ".flatpickr-hour": "hour",
+            ".flatpickr-minute": "minute",
+        };
+        for (const [selector, name] of Object.entries(controls)) {
+            const el = instance.calendarContainer.querySelector(selector);
+            if (el) {
+                el.name = `pickup_time_${name}`;
+                el.id = `pickupTime${name[0].toUpperCase()}${name.slice(1)}`;
+            }
+        }
+    }
 });
+
+// Flatpickr's visible input is generated without id/name
+pickupPicker.altInput.id = "pickupTimeDisplay";
+pickupPicker.altInput.name = "pickup_time_display";
+pickupPicker.altInput.setAttribute("aria-label", "Pickup Time");
+
+function resetForm() {
+    pickupPicker.clear();
+    pickupLocationInput.value = "";
+    dropoffLocationInput.value = "";
+    noteInput.value = "";
+}
 
 async function deleteMessage(id) {
     try {
         const response = await fetch(`${API_BASE}/delete_job/${id}`, { method: "DELETE" });
+        if (response.status === 401) {
+            window.location.href = "/account";
+            return;
+        }
         if (!response.ok) {
             throw new Error("Unable to delete message");
         }
@@ -112,11 +145,7 @@ formEl.addEventListener("submit", async (e) => {
 
     try {
         await submitJob(payload);
-        // Reset form
-        pickupTimeInput.value = "";
-        pickupLocationInput.value = "";
-        dropoffLocationInput.value = "";
-        noteInput.value = "";
+        resetForm();
     } catch (error) {
         console.error(error);
     }
@@ -125,24 +154,18 @@ formEl.addEventListener("submit", async (e) => {
 // Clear button logic
 const resetBtn = document.getElementById("resetBtn");
 if (resetBtn) {
-    resetBtn.addEventListener("click", () => {
-        pickupTimeInput.value = "";
-        pickupLocationInput.value = "";
-        dropoffLocationInput.value = "";
-        noteInput.value = "";
-        // Optional flatpickr clear workaround if flatpickr holds onto value internally:
-        if (pickupTimeInput._flatpickr) {
-            pickupTimeInput._flatpickr.clear();
-        }
-    });
+    resetBtn.addEventListener("click", resetForm);
 }
 
 async function loadMessageHistory() {
     try {
-        const response = await fetch(`${API_BASE}/get_jobs?own_only=true`);
+        const response = await fetch(`${API_BASE}/get_jobs`);
+        if (response.status === 401) {
+            window.location.href = "/account";
+            return;
+        }
         const data = await response.json();
-        const ownMessages = data.messages || [];
-        for (const msg of ownMessages) {
+        for (const msg of data.messages || []) {
             messagesEl.appendChild(buildMessageItem(msg.id, msg));
         }
     } catch (error) {

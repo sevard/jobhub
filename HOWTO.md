@@ -8,7 +8,7 @@ Start the server from the project root with:
 uv run python -m api.app
 ```
 
-Then open http://127.0.0.1:8001/ (publisher at `/post`, feed at `/feed`, health check at `/api/health`).
+Then open http://127.0.0.1:8001/post (create jobs) or http://127.0.0.1:8001/feed (view posted jobs). Health check: `/api/health`.
 
 ## Running tests
 

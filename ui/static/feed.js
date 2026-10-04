@@ -53,6 +53,10 @@ function buildMessageItem(id, payload) {
 async function loadMessageHistory() {
     try {
         const response = await fetch(`${API_BASE}/get_jobs`);
+        if (response.status === 401) {
+            window.location.href = "/account";
+            return;
+        }
         const data = await response.json();
         const messages = data.messages || [];
         // list_messages returns newest first; append in that order to keep newest on top
