@@ -1,8 +1,8 @@
 # JobHub
 
-JobHub is a lightweight ride-request board. Users can publish pickup and
-drop-off requests, see their own requests in the publisher view, and follow all
-requests in a live feed. The FastAPI backend stores requests in SQLite and
+JobHub is a lightweight ride-request board. Users can pickup and
+drop-off requests, see and follow all requests in a live feed. 
+The FastAPI backend stores requests in (for now) SQLite and
 broadcasts updates to connected browsers over WebSockets.
 
 ## Features
