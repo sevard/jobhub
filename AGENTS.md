@@ -15,19 +15,17 @@ This repository is a small ride-request board web app with:
   - then open http://127.0.0.1:8001/ (landing page with login link), http://127.0.0.1:8001/post (create jobs) or http://127.0.0.1:8001/feed (view posted jobs)
 
 ## Architecture guidance
-- Keep the backend as a lightweight FastAPI app that stores ride requests ("jobs") in SQLite and broadcasts them over a websocket.
-- Preserve the existing websocket endpoint:
-  - `/ws` (logged-in users only; receive-only: it broadcasts events to clients and must never accept or store input)
+- Keep the backend as a lightweight FastAPI app that stores ride requests ("jobs") in SQLite and broadcasts them to clients over WebSockets.
+- Preserve the existing WebSocket endpoint:
+  - `/ws` (logged-in users only; receive-only: it broadcasts job events to clients and must never accept or store input).
 - Preserve the existing backend api endpoints:
   - `/api/health`
   - `/api/info`
   - `/api/get_jobs`
-  - `/api/post_job`
-  - `/api/delete_job/{message_id}`
-- Jobs are created only via `/api/post_job`, which must require a valid pickup time and locations.
-- Roles: every user is a `dispatcher` or a `driver` (set at signup). Only dispatchers may open `/post`, create jobs (`/api/post_job`) and delete any job (`/api/delete_job/{message_id}`); logged-out requests get 401 and drivers get 403.
+- Jobs are created and deleted only through the dispatcher HTML forms (`POST /post`, `POST /post/delete/{id}`); there are no JSON job-write routes. Creating must require a valid pickup time and locations.
+- Roles: every user is a `dispatcher` or a `driver` (set at signup). Only dispatchers may open `/post`, create jobs and delete any job via those forms; logged-out requests are redirected to `/account` and drivers to `/account/home`.
 - `/feed` and `/api/get_jobs` require a logged-in user (the page redirects to `/account`, the API returns 401).
-- User accounts: `/api/signup`, `/api/login`, `/api/logout` and the `/account` page, the `/account/home` redirect, and the separate `/account/dispatcher` and `/account/driver` pages. Passwords are hashed with stdlib scrypt in the `users` table; logins use the HttpOnly `auth_token` cookie. Jobs record the posting account in `jobs.user_id`; there is no anonymous session cookie.
+- User accounts: the `/account` page with its form routes `/account/signup`, `/account/login` and `/account/logout` (there are no `/api` auth routes), the `/account/home` redirect, and the separate `/account/dispatcher` and `/account/driver` pages. Passwords are hashed with stdlib scrypt in the `users` table; logins use the HttpOnly `auth_token` cookie. Jobs record the posting account in `jobs.user_id`; there is no anonymous session cookie.
 - Serve the frontend via `from fastapi.templating import Jinja2Templates` rather than a static files mount; use Jinja2 templates for all pages, including loops/conditionals (e.g. message lists), rather than hand-building HTML strings.
 
 ## Change guidelines

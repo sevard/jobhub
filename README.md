@@ -57,43 +57,35 @@ Every account has a role, chosen at sign-up:
 - **dispatcher**: can open `/post`, create jobs, and delete any job.
 - **driver**: can browse available jobs at `/feed`; cannot create or delete jobs.
 
-Logged-out visitors and drivers get 401 or 403 from the dispatcher-only API endpoints. Accounts created before roles existed become drivers.
+Logged-out visitors are redirected to `/account` and drivers to `/account/home` from the dispatcher-only pages and forms. Accounts created before roles existed become drivers.
 
-## HTTP API
+## HTTP API (read-only)
 
 | Method | Endpoint | Description |
 | --- | --- | --- |
 | `GET` | `/api/health` | Health check |
 | `GET` | `/api/info` | Service status and WebSocket information |
 | `GET` | `/api/get_jobs` | List requests (login required) |
-| `POST` | `/api/post_job` | Create a request (dispatchers only) |
-| `DELETE` | `/api/delete_job/{message_id}` | Delete any request (dispatchers only) |
-| `POST` | `/api/signup` | Create an account and log in (username 3-32 letters, digits or `_`; password 8-128 characters; `role` is `dispatcher` or `driver`) |
-| `POST` | `/api/login` | Log in with username and password |
-| `POST` | `/api/logout` | Log out and clear the login cookie |
+| `WS` | `/ws` | Receive-only job event stream (login required) |
 
-Create a request by sending JSON to `/api/post_job`:
-
-```json
-{
-  "pickup_time": "2026-10-04T15:30:00",
-  "pickup_location": "Airport",
-  "dropoff_location": "Downtown",
-  "note": "One passenger"
-}
-```
-
-`pickup_time`, `pickup_location`, and `dropoff_location` are required.
-`note` is optional and defaults to an empty string. Only dispatchers can create requests; each request records the
+Jobs are created and deleted only through the dispatcher forms (`POST /post`, `POST /post/delete/{id}`); there is no JSON API for them.
+`pickup_time`, `pickup_location` and `dropoff_location` are required; `note` is optional. Only dispatchers can create or delete requests; each request records the
 posting account as `user_id`.
+
+CSRF protection uses `fastapi_csrf_protect`. The UI uses server-rendered forms
+(`/account/login|signup|logout`, `POST /post`, `POST /post/delete/{id}`), each
+carrying a hidden `csrf_token` field. Accounts are managed only through these
+forms (username 3-32 letters, digits or `_`; password 8-128 characters; `role`
+is `dispatcher` or `driver`). The token must match the `fastapi-csrf-token` cookie.
 
 ## WebSocket
 
-Connect to `/ws` (logged-in users only; others are closed with code 1008) using `ws://` (or `wss://` when served over HTTPS). Clients
-can receive JSON events when requests are created or deleted. The WebSocket is
-receive-only: client messages are ignored, and requests must be created or
-deleted through the HTTP API. A newly created request is broadcast in this
-shape:
+Connect to `/ws` over `ws://` or, when served over HTTPS, `wss://`. Only logged-in
+users may connect; unauthenticated connections are closed with code 1008. The
+WebSocket is receive-only: it pushes JSON events when requests are created or
+deleted and ignores messages from clients. Requests must be created or deleted
+through the HTTP API. Clients reconnect and reload the job history to recover
+events missed while disconnected. A newly created request is sent in this shape:
 
 ```json
 {

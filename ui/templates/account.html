@@ -1,52 +1,60 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>JobHub - Account</title>
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-  <link rel="stylesheet" href="/ui/static/style.css">
-  <link rel="apple-touch-icon" sizes="180x180" href="/ui/static/fav/apple-touch-icon.png">
-  <link rel="icon" type="image/png" sizes="32x32" href="/ui/static/fav/favicon-32x32.png">
-  <link rel="icon" type="image/png" sizes="16x16" href="/ui/static/fav/favicon-16x16.png">
-  <link rel="manifest" href="/ui/static/fav/site.webmanifest">
-</head>
-<body class="bg-light">
-  <div class="container py-5" style="max-width: 480px;">
+{% extends "base.html" %}
+{% block title %}JobHub - Account{% endblock %}
+{% block content %}
+<div class="container py-5" style="max-width: 480px;">
     <div class="mb-4">
-      <h1 class="mb-1">Account</h1>
-      <p class="text-muted mb-0" id="modeHint">Log in to your account.</p>
+        <h1 class="mb-1">Account</h1>
+        <p class="text-muted mb-0">{{ "Create your account." if mode == "signup" else "Log in to your account." }}</p>
     </div>
 
     <div class="card shadow-lg border-0 rounded-4">
-      <div class="card-body p-4">
-        <form id="authForm" novalidate>
-          <div class="form-floating mb-3">
-            <input type="text" id="usernameInput" class="form-control" placeholder="Username" autocomplete="username" minlength="3" maxlength="32" pattern="[A-Za-z0-9_]+" required>
-            <label for="usernameInput">Username</label>
-          </div>
-          <div class="form-floating mb-3">
-            <input type="password" id="passwordInput" class="form-control" placeholder="Password" autocomplete="current-password" minlength="8" maxlength="128" required>
-            <label for="passwordInput">Password</label>
-          </div>
-          <div id="roleGroup" class="mb-3" hidden>
-            <label for="roleSelect" class="form-label small text-muted">I want to</label>
-            <select id="roleSelect" name="role" class="form-select">
-              <option value="driver">Drive: find available jobs</option>
-              <option value="dispatcher">Dispatch: post and manage jobs</option>
-            </select>
-          </div>
-          <div id="authError" class="text-danger small mb-3" role="alert"></div>
-          <button type="submit" id="submitBtn" class="btn btn-primary rounded-pill px-4 w-100">Log in</button>
-        </form>
-        <p class="text-center text-muted small mt-3 mb-0">
-          <span id="switchText">No account yet?</span>
-          <a href="#" id="switchLink">Sign up</a>
-        </p>
-        <p class="text-muted small mt-3 mb-0">Username: 3-32 letters, digits or underscores. Password: at least 8 characters.</p>
-      </div>
+        <div class="card-body p-4">
+
+            {% set signup = mode == "signup" %}
+
+            <form method="post" action="{{ '/account/signup' if signup else '/account/login' }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+                <div class="form-floating mb-3">
+                    <input type="text" id="usernameInput" name="username" class="form-control" 
+                        placeholder="Username" autocomplete="username" 
+                        minlength="3" maxlength="32" pattern="[A-Za-z0-9_]+" required>
+                    <label for="usernameInput">Username</label>
+                </div>
+
+                <div class="form-floating mb-3">
+                    <input type="password" id="passwordInput" name="password" class="form-control"
+                        placeholder="Password" autocomplete="{{ 'new-password' if signup else 'current-password' }}"
+                        minlength="8" maxlength="128" required>
+                    <label for="passwordInput">Password</label>
+                </div>
+
+                {% if signup %}
+                    <div class="mb-3">
+                        <label for="roleSelect" class="form-label small text-muted">I want to</label>
+                        <select id="roleSelect" name="role" class="form-select">
+                            <option value="driver">Drive: find available jobs</option>
+                            <option value="dispatcher">Dispatch: post and manage jobs</option>
+                        </select>
+                    </div>
+                {% endif %}
+
+                {% if error %}
+                    <div class="text-danger small mb-3" role="alert">{{ error }}</div>
+                {% endif %}
+
+                <button type="submit" class="btn btn-primary rounded-pill px-4 w-100">
+                    {{ "Sign up" if signup else "Log in" }}
+                </button>
+            </form>
+
+            <p class="text-center text-muted small mt-3 mb-0">
+                {% if signup %}Already have an account? <a href="/account">Log in</a>
+                {% else %}No account yet? <a href="/account?mode=signup">Sign up</a>{% endif %}
+            </p>
+            <p class="text-muted small mt-3 mb-0">Username: 3-32 letters, digits or underscores. Password: at least 8
+                characters.</p>
+        </div>
     </div>
-  </div>
-  <script src="/ui/static/account.js"></script>
-</body>
-</html>
+</div>
+{% endblock %}

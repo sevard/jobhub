@@ -1,17 +1,37 @@
+import os
 import json
 import logging
-import os
+import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import List, Literal
+from typing import Literal
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request, Response, WebSocket
-from fastapi.responses import RedirectResponse
+from fastapi import (
+    Depends,
+    FastAPI,
+    HTTPException,
+    Request,
+    Response,
+    WebSocket,
+    WebSocketDisconnect,
+)
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel, Field
+
+from fastapi_csrf_protect import CsrfProtect
+from fastapi_csrf_protect.exceptions import CsrfProtectError
+
+from pydantic import BaseModel, Field, ValidationError
+# from pydantic_settings import BaseSettings
+
+BASE_DIR = Path(__file__).resolve().parents[1]
+FRONTEND_DIR = BASE_DIR / "ui"
+templates = Jinja2Templates(directory=FRONTEND_DIR / "templates")
+
+AUTH_COOKIE = "auth_token"
 
 from api.db import (
     create_auth_session,
@@ -35,12 +55,18 @@ async def lifespan(app: FastAPI):
     init_db()
     yield
 
-app = FastAPI(title="Incoming WebSocket Relay", lifespan=lifespan)
+
+app = FastAPI(title="Ride Request Board", lifespan=lifespan)
 app.state.development_mode = is_development
 
-BASE_DIR = Path(__file__).resolve().parents[1]
-FRONTEND_DIR = BASE_DIR / "ui"
-templates = Jinja2Templates(directory=FRONTEND_DIR / "templates")
+
+@app.middleware("http")
+async def revalidate_cached_responses(request: Request, call_next):
+    # Without this, browsers heuristically cache static assets and /api responses
+    response = await call_next(request)
+    if request.url.path.startswith(("/ui/static", "/api/")):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
 
 
 class JobPayload(BaseModel):
@@ -60,36 +86,80 @@ class SignupPayload(Credentials):
 
 
 class ConnectionManager:
+    """Fans job events out to every connected WebSocket client."""
+
     def __init__(self):
-        self.active_connections: List[WebSocket] = []
+        # TODO: change to some other in memory like redis
+        self.active_connections: set[WebSocket] = set()
 
-    async def connect(self, websocket: WebSocket):
+    async def connect(self, websocket: WebSocket) -> None:
         await websocket.accept()
-        self.active_connections.append(websocket)
-        logger.info(
-            f"Client connected: {id(websocket)} (active: {len(self.active_connections)})")
+        self.active_connections.add(websocket)
+        logger.info("Client connected (active: %s)", len(self.active_connections))
 
-    def disconnect(self, websocket: WebSocket):
+    def disconnect(self, websocket: WebSocket) -> None:
         if websocket in self.active_connections:
-            self.active_connections.remove(websocket)
+            self.active_connections.discard(websocket)
             logger.info(
-                f"Client disconnected: {id(websocket)} (active: {len(self.active_connections)})")
+                "Client disconnected (active: %s)", len(self.active_connections)
+            )
 
-    async def broadcast(self, message: str):
-        for connection in self.active_connections.copy():
+    async def broadcast(self, message: str) -> None:
+        for websocket in self.active_connections.copy():
             try:
-                await connection.send_text(message)
-            except RuntimeError as e:
-                logger.warning(f"Failed to send to client {id(connection)}: {e}")
-                self.disconnect(connection)
-            except Exception as e:
-                logger.error(f"Unexpected error broadcasting to client {id(connection)}: {e}")
-                self.disconnect(connection)
+                await websocket.send_text(message)
+            except (WebSocketDisconnect, RuntimeError):
+                self.disconnect(websocket)
 
 
 manager = ConnectionManager()
 
-AUTH_COOKIE = "auth_token"
+
+@CsrfProtect.load_config
+def get_csrf_config():
+    return [
+        ("secret_key", os.getenv("CSRF_SECRET", secrets.token_hex(32))),
+        ("cookie_samesite", "lax"),
+        ("token_key", "csrf_token"),
+    ]
+
+
+@app.exception_handler(CsrfProtectError)
+async def csrf_protect_exception_handler(
+    request: Request, exc: CsrfProtectError
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.message},
+    )
+
+
+def _template_response_with_csrf(
+    request: Request,
+    template_name: str,
+    context: dict,
+    csrf_protect: CsrfProtect,
+    status_code: int = 200,
+):
+    csrf_token, signed_token = csrf_protect.generate_csrf_tokens()
+    response = templates.TemplateResponse(
+        request,
+        template_name,
+        {**context, "csrf_token": csrf_token},
+        status_code=status_code,
+    )
+    csrf_protect.set_csrf_cookie(signed_token, response)
+    return response
+
+
+async def validate_form_csrf(request: Request, csrf_protect: CsrfProtect) -> dict:
+    """Validate the csrf_token hidden field of a server-rendered form and return the fields."""
+    form = dict(await request.form())
+    # Per-request instance; the library declares _token_location as a ClassVar,
+    # so setattr (instance attribute) avoids the type error without changing the class
+    setattr(csrf_protect, "_token_location", "body")
+    await csrf_protect.validate_csrf(request)
+    return form
 
 
 def current_user(request: Request):
@@ -105,6 +175,35 @@ def _start_login(response: Response, user_id: int) -> None:
     )
 
 
+def _account_page(
+    request: Request,
+    csrf_protect: CsrfProtect,
+    mode: str = "login",
+    error: str = "",
+    status_code: int = 200,
+):
+    return _template_response_with_csrf(
+        request,
+        "account.html",
+        {"mode": "signup" if mode == "signup" else "login", "error": error},
+        csrf_protect,
+        status_code,
+    )
+
+
+def _role_account_page(
+    request: Request, role: str, csrf_protect: CsrfProtect
+):
+    user = current_user(request)
+    if not user:
+        return RedirectResponse("/account", status_code=303)
+    if user["role"] != role:
+        return RedirectResponse(f"/account/{user['role']}", status_code=303)
+    return _template_response_with_csrf(
+        request, f"account_{role}.html", {"user": user}, csrf_protect
+    )
+
+
 @app.get("/api/health")
 async def health():
     return {"status": "ok"}
@@ -117,22 +216,24 @@ async def root():
         "status": "running",
         "websocket_endpoints": ["/ws"],
         "development_mode": app.state.development_mode,
-        "note": "Websocket relay that broadcasts messages to all connected clients.",
+        "note": "WebSocket relay that broadcasts job events to all connected clients.",
     }
 
+
 @app.get("/", include_in_schema=False)
-async def ui_index(request: Request):
+async def ui_landing(request: Request):
     if current_user(request):
         return RedirectResponse("/account/home", status_code=303)
-    return templates.TemplateResponse(request, "index.html")
+    return templates.TemplateResponse(request, "account_landing.html")
 
-# --------- AUTH USER FUNCS -------------
+
 @app.get("/account", include_in_schema=False)
-async def ui_account(request: Request):
-    user = current_user(request)
-    if user:
+async def ui_account(
+    request: Request, mode: str = "login", csrf_protect: CsrfProtect = Depends()
+):
+    if current_user(request):
         return RedirectResponse("/account/home", status_code=303)
-    return templates.TemplateResponse(request, "account.html")
+    return _account_page(request, csrf_protect, mode)
 
 
 @app.get("/account/home", include_in_schema=False)
@@ -143,67 +244,129 @@ async def ui_account_home(request: Request):
     return RedirectResponse(f"/account/{user['role']}", status_code=303)
 
 
+@app.post("/account/login", include_in_schema=False)
+async def ui_login(request: Request, csrf_protect: CsrfProtect = Depends()):
+    form = await validate_form_csrf(request, csrf_protect)
+    try:
+        creds = Credentials.model_validate(form)
+    except ValidationError:
+        return _account_page(
+            request, csrf_protect, "login",
+            "Enter a valid username and a password of at least 8 characters.", 422)
+
+    user_id = verify_user(creds.username, creds.password)
+    if user_id is None:
+        return _account_page(
+            request, csrf_protect, "login", "Invalid username or password", 401)
+
+    response = RedirectResponse("/account/home", status_code=303)
+    _start_login(response, user_id)
+    return response
+
+
+@app.post("/account/signup", include_in_schema=False)
+async def ui_signup(request: Request, csrf_protect: CsrfProtect = Depends()):
+    form = await validate_form_csrf(request, csrf_protect)
+    try:
+        payload = SignupPayload.model_validate(form)
+    except ValidationError:
+        return _account_page(
+            request, csrf_protect, "signup",
+            "Username: 3-32 letters, digits or underscores. Password: 8-128 characters.", 422)
+    user_id = create_user(payload.username, payload.password, payload.role)
+    if user_id is None:
+        return _account_page(
+            request, csrf_protect, "signup", "Username is already taken", 409)
+    response = RedirectResponse("/account/home", status_code=303)
+    _start_login(response, user_id)
+    return response
+
+
+@app.post("/account/logout", include_in_schema=False)
+async def ui_logout(request: Request, csrf_protect: CsrfProtect = Depends()):
+    await validate_form_csrf(request, csrf_protect)
+    delete_auth_session(request.cookies.get(AUTH_COOKIE))
+    response = RedirectResponse("/account", status_code=303)
+    response.delete_cookie(AUTH_COOKIE)
+    return response
+
+
 @app.get("/account/dispatcher", include_in_schema=False)
-async def ui_account_dispatcher(request: Request):
-    return _role_account_page(request, "dispatcher")
+async def ui_account_dispatcher(
+    request: Request, csrf_protect: CsrfProtect = Depends()
+):
+    return _role_account_page(request, "dispatcher", csrf_protect)
 
 
 @app.get("/account/driver", include_in_schema=False)
-async def ui_account_driver(request: Request):
-    return _role_account_page(request, "driver")
+async def ui_account_driver(
+    request: Request, csrf_protect: CsrfProtect = Depends()
+):
+    return _role_account_page(request, "driver", csrf_protect)
 
-
-def _role_account_page(request: Request, role: str):
-    user = current_user(request)
-    if not user:
-        return RedirectResponse("/account", status_code=303)
-    if user["role"] != role:
-        return RedirectResponse(f"/account/{user['role']}", status_code=303)
-    return templates.TemplateResponse(request, f"account_{role}.html", {"user": user})
-
-
-@app.post("/api/signup", status_code=201)
-async def signup(payload: SignupPayload, response: Response):
-    user_id = create_user(payload.username, payload.password, payload.role)
-    if user_id is None:
-        raise HTTPException(status_code=409, detail="Username is already taken")
-    _start_login(response, user_id)
-    return {"status": "ok", "username": payload.username, "role": payload.role}
-
-
-@app.post("/api/login")
-async def login(payload: Credentials, response: Response):
-    user_id = verify_user(payload.username, payload.password)
-    if user_id is None:
-        raise HTTPException(status_code=401, detail="Invalid username or password")
-    _start_login(response, user_id)
-    return {"status": "ok", "username": payload.username}
-
-
-@app.post("/api/logout")
-async def logout(request: Request, response: Response):
-    delete_auth_session(request.cookies.get(AUTH_COOKIE))
-    response.delete_cookie(AUTH_COOKIE)
-    return {"status": "ok"}
 # -------------------------------------------------------
 
-def require_dispatcher(request: Request) -> dict:
+def _post_page(
+    request: Request,
+    csrf_protect: CsrfProtect,
+    error: str = "",
+    values: dict | None = None,
+    status_code: int = 200,
+):
+    return _template_response_with_csrf(
+        request,
+        "post.html",
+        {"jobs": list_jobs(), "error": error, "values": values or {}},
+        csrf_protect,
+        status_code,
+    )
+
+
+def _dispatcher_redirect(request: Request):
     user = current_user(request)
     if not user:
-        raise HTTPException(status_code=401, detail="Log in to continue")
+        return None, RedirectResponse("/account", status_code=303)
     if user["role"] != "dispatcher":
-        raise HTTPException(status_code=403, detail="Only dispatchers can do this")
-    return user
+        return None, RedirectResponse("/account/home", status_code=303)
+    return user, None
+
+
 
 
 @app.get("/post", include_in_schema=False)
-async def ui_post(request: Request):
-    user = current_user(request)
+async def ui_post(request: Request, csrf_protect: CsrfProtect = Depends()):
+    _, redirect = _dispatcher_redirect(request)
+    return redirect or _post_page(request, csrf_protect)
+
+
+@app.post("/post", include_in_schema=False)
+async def ui_post_submit(request: Request, csrf_protect: CsrfProtect = Depends()):
+    user, redirect = _dispatcher_redirect(request)
     if not user:
-        return RedirectResponse("/account", status_code=303)
-    if user["role"] != "dispatcher":
-        return RedirectResponse("/account/home", status_code=303)
-    return templates.TemplateResponse(request, "post.html")
+        return redirect
+    form = await validate_form_csrf(request, csrf_protect)
+    try:
+        payload = _clean_job(form)
+    except HTTPException as e:
+        return _post_page(request, csrf_protect, e.detail, form, e.status_code)
+
+    await _publish_job(user, payload)
+    return RedirectResponse("/post", status_code=303)
+
+
+@app.post("/post/delete/{message_id}", include_in_schema=False)
+async def ui_post_delete(
+    message_id: int, request: Request, csrf_protect: CsrfProtect = Depends()
+):
+    _, redirect = _dispatcher_redirect(request)
+    
+    if redirect:
+        return redirect
+    await validate_form_csrf(request, csrf_protect)
+    
+    if delete_job(message_id):
+        await manager.broadcast(json.dumps({"type": "delete", "id": message_id}))
+    return RedirectResponse("/post", status_code=303)
 
 
 @app.get("/feed", include_in_schema=False)
@@ -214,67 +377,66 @@ async def ui_feed(request: Request):
 
 
 @app.get("/api/get_jobs")
-async def messages(request: Request):
+async def get_jobs(request: Request):
     if not current_user(request):
         raise HTTPException(status_code=401, detail="Log in to view jobs")
-
     return {"messages": list_jobs()}
 
 
-@app.post("/api/post_job")
-async def create_message(payload: JobPayload, request: Request):
-    user = require_dispatcher(request)
+def _clean_job(raw) -> JobPayload:
+    try:
+        payload = JobPayload.model_validate(raw)
+    except ValidationError as e:
+        raise HTTPException(
+            status_code=422, detail="Invalid job details") from e
 
+    payload.pickup_location = payload.pickup_location.strip()
+    payload.dropoff_location = payload.dropoff_location.strip()
+    payload.note = payload.note.strip()
+
+    if not payload.pickup_location or not payload.dropoff_location:
+        raise HTTPException(status_code=422, detail="Locations are required")
+
+    return payload
+
+
+async def _publish_job(user: dict, payload: JobPayload) -> int:
     new_id = save_job(
-        user["id"], 
-        payload.pickup_time.isoformat(), 
-        payload.pickup_location, 
+        user["id"],
+        payload.pickup_time.isoformat(),
+        payload.pickup_location,
         payload.dropoff_location,
-        payload.note
+        payload.note,
     )
-    
     await manager.broadcast(
         json.dumps({
-            "type": "message", 
+            "type": "message",
             "id": new_id,
             "user_id": user["id"],
             "pickup_time": payload.pickup_time.isoformat(),
             "pickup_location": payload.pickup_location,
             "dropoff_location": payload.dropoff_location,
-            "note": payload.note
+            "note": payload.note,
         })
     )
-    return {"status": "ok", "id": new_id}
-
-
-@app.delete("/api/delete_job/{message_id}")
-async def remove_message(message_id: int, request: Request):
-    require_dispatcher(request)
-
-    if not delete_job(message_id):
-        raise HTTPException(status_code=404, detail="Message not found")
-
-    await manager.broadcast(json.dumps({"type": "delete", "id": message_id}))
-    return {"status": "ok"}
-
-
-async def _websocket_relay_impl(websocket: WebSocket):
-    if not get_user_by_token(websocket.cookies.get(AUTH_COOKIE)):
-        await websocket.close(code=1008)
-        return
-    await manager.connect(websocket)
-    try:
-        while True:
-            message = await websocket.receive()
-            if message["type"] == "websocket.disconnect":
-                break
-    finally:
-        manager.disconnect(websocket)
+    return new_id
 
 
 @app.websocket("/ws")
-async def websocket_relay(websocket: WebSocket):
-    await _websocket_relay_impl(websocket)
+async def websocket_relay(websocket: WebSocket) -> None:
+    """Receive-only authenticated WebSocket for job created/deleted events."""
+    if not get_user_by_token(websocket.cookies.get(AUTH_COOKIE)):
+        await websocket.close(code=1008)
+        return
+
+    await manager.connect(websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        manager.disconnect(websocket)
 
 
 # Mounted last so it never shadows the API/page routes defined above; serves CSS/JS assets only.
@@ -293,5 +455,5 @@ def run_server() -> None:
 
 
 if __name__ == "__main__":
-    print("Starting relay on http://localhost:8001 and ws://localhost:8001/ws")
+    print("Starting relay on http://localhost:8001")
     run_server()

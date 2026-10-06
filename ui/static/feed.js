@@ -1,97 +1,127 @@
 const messagesEl = document.getElementById("messages");
+const emptyEl = document.getElementById("empty-state");
 const messageTemplate = document.getElementById("message-template");
 const API_BASE = "/api";
 
-// The WebSocket URL is constructed based on the current page's protocol and host.
-const WS_URL = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`;
+function formatPickupTime(value) {
+    const d = new Date(value);
+    if (!value || Number.isNaN(d.getTime())) return "TBD";
+    return d.toLocaleString([], {
+        year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit",
+    });
+}
+
+function updateEmptyState() {
+    emptyEl.hidden = messagesEl.children.length > 0;
+}
 
 function buildMessageItem(id, payload) {
     const fragment = messageTemplate.content.cloneNode(true);
     const li = fragment.querySelector("li");
-    
-    const timeEl = fragment.querySelector('[data-id="timeEl"]');
-    const pickupEl = fragment.querySelector('[data-id="pickupEl"]');
-    const dropoffEl = fragment.querySelector('[data-id="dropoffEl"]');
-    const noteEl = fragment.querySelector('[data-id="noteEl"]');
+    const field = (name) => fragment.querySelector(`[data-field="${name}"]`);
 
     li.dataset.id = id;
-    
-    // Format the date securely like 2026-08-12 12:00 PM
-    if (payload.pickup_time) {
-        const d = new Date(payload.pickup_time);
-        const yyyy = d.getFullYear();
-        const mm = String(d.getMonth() + 1).padStart(2, '0');
-        const dd = String(d.getDate()).padStart(2, '0');
-        let hours = d.getHours();
-        const mins = String(d.getMinutes()).padStart(2, '0');
-        const ampm = hours >= 12 ? 'PM' : 'AM';
-        hours = hours % 12;
-        hours = hours ? hours : 12; // the hour '0' should be '12'
-        timeEl.textContent = `${yyyy}-${mm}-${dd} ${String(hours).padStart(2, '0')}:${mins} ${ampm}`;
-    } else {
-        timeEl.textContent = "TBD";
-    }
+    field("time").textContent = formatPickupTime(payload.pickup_time);
+    field("pickup").textContent = payload.pickup_location || "TBD";
+    field("dropoff").textContent = payload.dropoff_location || "TBD";
 
-    pickupEl.textContent = payload.pickup_location || "TBD";
-    dropoffEl.textContent = payload.dropoff_location || "TBD";
-    
+    const noteEl = field("note");
     if (payload.note) {
         noteEl.textContent = `"${payload.note}"`;
     } else {
-        noteEl.style.display = 'none';
+        noteEl.hidden = true;
     }
-
-    // Need to remove data-id attributes after cloning to keep it clean (optional, but consistent with prior behavior)
-    timeEl.removeAttribute('data-id');
-    pickupEl.removeAttribute('data-id');
-    dropoffEl.removeAttribute('data-id');
-    noteEl.removeAttribute('data-id');
 
     return li;
 }
 
-async function loadMessageHistory() {
-    try {
-        const response = await fetch(`${API_BASE}/get_jobs`);
-        if (response.status === 401) {
-            window.location.href = "/account";
-            return;
-        }
-        const data = await response.json();
-        const messages = data.messages || [];
-        // list_messages returns newest first; append in that order to keep newest on top
-        for (const msg of messages) {
-            messagesEl.appendChild(buildMessageItem(msg.id, msg));
-        }
-    } catch (error) {
-        console.error("Unable to load message history", error);
+function hasMessage(id) {
+    return messagesEl.querySelector(`[data-id="${id}"]`) !== null;
+}
+
+function addMessage(payload, { prepend = false } = {}) {
+    if (hasMessage(payload.id)) return;
+    const li = buildMessageItem(payload.id, payload);
+    if (prepend) {
+        messagesEl.prepend(li);
+    } else {
+        messagesEl.appendChild(li);
     }
+    updateEmptyState();
 }
 
 function removeMessage(id) {
     const li = messagesEl.querySelector(`[data-id="${id}"]`);
-    if (li) { 
+    if (li) {
         li.remove();
+        updateEmptyState();
     }
 }
 
-function connectLiveFeed() {
-    const ws = new WebSocket(WS_URL);
-    ws.onmessage = (event) => {
-        let payload;
-        try {
-            payload = JSON.parse(event.data);
-        } catch (error) {
-            console.error("Received raw string or unparseable job ws payload, skipping!", event.data);
+// Replaces the list with the server's current jobs, so it also repairs anything missed while disconnected.
+async function loadMessageHistory() {
+    try {
+        const response = await fetch(`${API_BASE}/get_jobs`, { cache: "no-store" });
+        if (response.status === 401) {
+            window.location.href = "/account";
             return;
         }
-
-        if (payload.type === "delete") {
-            removeMessage(payload.id);
-        } else {
-            messagesEl.prepend(buildMessageItem(payload.id, payload));
+        if (!response.ok) {
+            console.error("Unable to load jobs", response.status);
+            return;
         }
+        const data = await response.json();
+        messagesEl.replaceChildren();
+        // list_jobs returns newest first; append in that order to keep newest on top
+        for (const msg of data.messages || []) {
+            addMessage(msg);
+        }
+        updateEmptyState();
+    } catch (error) {
+        console.error("Unable to load job history", error);
+    }
+}
+
+function handleLiveEvent(data) {
+    let payload;
+    try {
+        payload = JSON.parse(data);
+    } catch (error) {
+        console.error("Received unparseable job payload, skipping", data);
+        return;
+    }
+
+    if (payload.type === "delete") {
+        removeMessage(payload.id);
+    } else {
+        addMessage(payload, { prepend: true });
+    }
+}
+
+let reconnectDelay = 1000;
+
+function connectWebSocket() {
+    const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+    const socket = new WebSocket(`${scheme}//${location.host}/ws`);
+    socket.onopen = () => {
+        reconnectDelay = 1000;
+        loadMessageHistory();
+    };
+    socket.onmessage = (event) => handleLiveEvent(event.data);
+    socket.onclose = (event) => {
+        loadMessageHistory();
+        if (event.code === 1008) {
+            return;
+        }
+        setTimeout(connectWebSocket, reconnectDelay);
+        reconnectDelay = Math.min(reconnectDelay * 2, 30000);
     };
 }
 
-loadMessageHistory().then(connectLiveFeed);
+// A page restored from the back/forward cache keeps stale state and a dead stream.
+window.addEventListener("pageshow", (event) => {
+    if (event.persisted) location.reload();
+});
+
+connectWebSocket();

@@ -5,12 +5,15 @@
 ### Added
 - `/ws` now accepts only logged-in users; other connections are closed with code 1008.
 - Account roles: `dispatcher` and `driver`, chosen at sign-up. Only dispatchers can open `/post`, create jobs and delete any job; the account home shows a role-specific link. Existing accounts default to driver.
-- User accounts: sign up, log in and log out with a username and password (`/account`, `/api/signup`, `/api/login`, `/api/logout`). After login the user lands on the account home page (`/account/home`). Passwords are hashed with scrypt and logins use an HttpOnly cookie.
+- User accounts: sign up, log in and log out with a username and password (`/account`, `/account/signup`, `/account/login`, `/account/logout`). After login the user lands on the account home page (`/account/home`). Passwords are hashed with scrypt and logins use an HttpOnly cookie.
 - README.md covering features, setup, pages, HTTP API, WebSocket events, tests and layout.
 - Structured ride-request board: a `jobs` table, `JobPayload` validation (pickup time and locations), and new post/feed pages with forms and live feeds.
 - Tests for the job endpoints, a receive-only WebSocket.
 
 ### Changed
+- Removed the JSON `/api/post_job` and `/api/delete_job/{id}` routes; jobs are created and deleted only through the `/post` forms.
+- Removed the JSON `/api/signup`, `/api/login` and `/api/logout` routes; accounts use only the `/account/*` form routes.
+- Restored the receive-only `/ws` WebSocket in place of `/api/events`; `/api/info` reports `websocket_endpoints`.
 - Split the account home into separate dispatcher and driver pages (`/account/dispatcher`, `/account/driver`). `/account/home` now redirects to the page for the user's role, and each page redirects users of the other role.
 - Jobs are now tied to the posting account (`jobs.user_id`) instead of the anonymous `session_id` cookie, which is no longer set. Existing databases are migrated automatically; old jobs get a null `user_id`. The `session_id` field in job events is now `user_id`.
 - Removed the unused `own_only` option and `my_session_id` field from `GET /api/get_jobs`; it no longer sets the anonymous `session_id` cookie.

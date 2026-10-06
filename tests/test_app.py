@@ -18,6 +18,7 @@ from api.db import DB_PATH
 def _make_request(cookies=None):
     request = MagicMock()
     request.cookies = cookies or {}
+    request.headers = {}
     return request
 
 
@@ -56,6 +57,14 @@ class DevelopmentModeTests(unittest.TestCase):
 
         self.assertTrue(response["development_mode"])
 
+    def test_info_reports_websocket_endpoint(self):
+        app_module = importlib.import_module("api.app")
+
+        response = asyncio.run(app_module.root())
+
+        self.assertEqual(response["websocket_endpoints"], ["/ws"])
+        self.assertNotIn("event_stream_endpoints", response)
+
     def test_run_server_uses_import_string_for_reload(self):
         os.environ["APP_ENV"] = "development"
         app_module = importlib.import_module("api.app")
@@ -76,7 +85,7 @@ class DevelopmentModeTests(unittest.TestCase):
         app_module.save_job("test-session", "2024-05-15T12:00", "LAX", "San Francisco", "note text")
 
         with patch.object(app_module, "current_user", return_value={"id": 1, "username": "u", "role": "driver"}):
-            response = asyncio.run(app_module.messages(_make_request()))
+            response = asyncio.run(app_module.get_jobs(_make_request()))
 
         self.assertIn("messages", response)
         contents = [message["pickup_location"] for message in response["messages"]]
@@ -85,13 +94,11 @@ class DevelopmentModeTests(unittest.TestCase):
         with sqlite3.connect(DB_PATH) as connection:
             connection.execute("DELETE FROM jobs WHERE pickup_location = ?", ("LAX",))
 
-    def test_create_message_saves_and_broadcasts(self):
+    def test_publish_job_saves_and_broadcasts(self):
         os.environ["APP_ENV"] = "development"
         app_module = importlib.import_module("api.app")
-        request = _make_request()
 
-        with patch.object(app_module, "current_user", return_value={"id": 7, "username": "pub", "role": "dispatcher"}), \
-                patch.object(app_module, "save_job") as save_mock, \
+        with patch.object(app_module, "save_job") as save_mock, \
                 patch.object(app_module.manager, "broadcast") as broadcast_mock:
             save_mock.return_value = 42
             payload = app_module.JobPayload(
@@ -100,7 +107,7 @@ class DevelopmentModeTests(unittest.TestCase):
                 dropoff_location="San Jose",
                 note="Fragile"
             )
-            result = asyncio.run(app_module.create_message(payload, request))
+            result = asyncio.run(app_module._publish_job({"id": 7}, payload))
 
         save_mock.assert_called_once_with(7, "2026-05-15T12:00:00", "SFO", "San Jose", "Fragile")
         broadcast_mock.assert_called_once_with(
@@ -114,63 +121,47 @@ class DevelopmentModeTests(unittest.TestCase):
                 "note": "Fragile"
             })
         )
-        self.assertEqual(result, {"status": "ok", "id": 42})
+        self.assertEqual(result, 42)
 
-    def test_websocket_input_does_not_save_or_broadcast_messages(self):
+    def _delete_job_via_form(self, app_module, user, job_exists=True):
+        with patch.object(app_module, "current_user", return_value=user), \
+                patch.object(app_module, "validate_form_csrf", new=AsyncMock()), \
+                patch.object(app_module, "delete_job", return_value=job_exists) as delete_mock, \
+                patch.object(app_module.manager, "broadcast") as broadcast_mock:
+            response = asyncio.run(
+                app_module.ui_post_delete(7, _make_request(), MagicMock())
+            )
+        return response, delete_mock, broadcast_mock
+
+    def test_post_delete_removes_and_broadcasts(self):
         os.environ["APP_ENV"] = "development"
         app_module = importlib.import_module("api.app")
-        websocket = MagicMock()
-        websocket.accept = AsyncMock()
-        websocket.receive = AsyncMock(side_effect=[
-            {"type": "websocket.receive", "text": '{"pickup_location":"SFO"}'},
-            {"type": "websocket.disconnect", "code": 1000},
-        ])
 
-        websocket.cookies = {"auth_token": "t"}
-        with patch.object(app_module, "get_user_by_token", return_value={"id": 1}), \
-                patch.object(app_module, "save_job") as save_mock, \
-                patch.object(app_module.manager, "broadcast") as broadcast_mock:
-            asyncio.run(app_module._websocket_relay_impl(websocket))
-
-        save_mock.assert_not_called()
-        broadcast_mock.assert_not_called()
-        self.assertNotIn(websocket, app_module.manager.active_connections)
-
-    def test_delete_message_removes_and_broadcasts(self):
-        os.environ["APP_ENV"] = "development"
-        app_module = importlib.import_module("api.app")
-        request = _make_request()
-
-        with patch.object(app_module, "current_user", return_value={"id": 1, "username": "pub", "role": "dispatcher"}), \
-                patch.object(app_module, "delete_job", return_value=True) as delete_mock, \
-                patch.object(app_module.manager, "broadcast") as broadcast_mock:
-            response = asyncio.run(app_module.remove_message(7, request))
+        response, delete_mock, broadcast_mock = self._delete_job_via_form(
+            app_module, {"id": 1, "username": "pub", "role": "dispatcher"}
+        )
 
         delete_mock.assert_called_once_with(7)
         broadcast_mock.assert_called_once_with(json.dumps({"type": "delete", "id": 7}))
-        self.assertEqual(response, {"status": "ok"})
+        self.assertEqual((response.status_code, response.headers["location"]), (303, "/post"))
 
-    def test_delete_message_returns_404_when_missing(self):
+    def test_post_delete_does_not_broadcast_when_job_is_missing(self):
         os.environ["APP_ENV"] = "development"
         app_module = importlib.import_module("api.app")
-        request = _make_request()
 
-        with patch.object(app_module, "current_user", return_value={"id": 1, "username": "pub", "role": "dispatcher"}), \
-                patch.object(app_module, "delete_job", return_value=False):
-            with self.assertRaises(app_module.HTTPException) as ctx:
-                asyncio.run(app_module.remove_message(999, request))
+        response, _, broadcast_mock = self._delete_job_via_form(
+            app_module, {"id": 1, "username": "pub", "role": "dispatcher"}, job_exists=False
+        )
 
-        self.assertEqual(ctx.exception.status_code, 404)
+        broadcast_mock.assert_not_called()
+        self.assertEqual(response.status_code, 303)
 
-    def test_delete_message_returns_401_when_not_logged_in(self):
+    def test_post_delete_redirects_when_not_logged_in(self):
         os.environ["APP_ENV"] = "development"
         app_module = importlib.import_module("api.app")
-        request = _make_request()
 
-        with patch.object(app_module, "current_user", return_value=None), \
-                patch.object(app_module, "delete_job") as delete_mock:
-            with self.assertRaises(app_module.HTTPException) as ctx:
-                asyncio.run(app_module.remove_message(7, request))
+        response, delete_mock, broadcast_mock = self._delete_job_via_form(app_module, None)
 
         delete_mock.assert_not_called()
-        self.assertEqual(ctx.exception.status_code, 401)
+        broadcast_mock.assert_not_called()
+        self.assertEqual(response.headers["location"], "/account")
