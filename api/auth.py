@@ -1,6 +1,6 @@
 import sqlite3
 from datetime import datetime, timedelta, timezone
-from typing import Annotated, Optional
+from typing import Annotated, Literal, Optional, get_args
 
 import jwt
 from fastapi import Depends, HTTPException, status
@@ -18,6 +18,9 @@ DUMMY_HASH = password_hash.hash("dummypassword")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
 
+Role = Literal["admin", "driver"]
+
+
 class Token(BaseModel):
     access_token: str
     token_type: str
@@ -27,6 +30,7 @@ class User(BaseModel):
     username: str
     password: str | None = None
     disabled: bool = False
+    role: Role = "driver"
 
 
 class UserInDB(User):
@@ -46,12 +50,16 @@ def get_password_hash(password: str) -> str:
 
 def _get_user_by_username(username: str):
     row = CONNECTION.execute(
-        "SELECT username, password_hash, disabled FROM users WHERE username = ?",
+        "SELECT username, password_hash, disabled, role FROM users WHERE username = ?",
         (username,),
     ).fetchone()
     if row:
         return UserInDB(
-            username=row[0], hashed_password=row[1], disabled=bool(row[2]))
+            username=row[0],
+            hashed_password=row[1],
+            disabled=bool(row[2]),
+            role=row[3],
+        )
     return None
 
 
@@ -114,14 +122,48 @@ async def get_current_active_user(
     return current_user
 
 
-def create_user(username: str, password: str) -> Optional[int]:
-    """Create a user; return its id, or None if the username is taken."""
+async def get_current_admin(
+    current_user: Annotated[User, Depends(get_current_user)],
+):
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+    return current_user
+
+
+async def get_current_driver(
+    current_user: Annotated[User, Depends(get_current_user)],
+):
+    if current_user.role != "driver":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Driver access required")
+    return current_user
+
+
+def create_user(
+    username: str, password: str, role: Role = "driver"
+) -> Optional[int]:
+    """Create a user; return its id, or None if the username is taken.
+
+    Only trusted code (the create_admin script) may pass a role; the signup
+    route must never take it from the request.
+    """
+    if role not in get_args(Role):
+        raise ValueError(f"Unknown role: {role!r}")
     try:
         cursor = CONNECTION.execute(
-            "INSERT INTO users (username, password_hash) VALUES (?, ?)",
-            (username, get_password_hash(password)),
+            "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
+            (username, get_password_hash(password), role),
         )
     except sqlite3.IntegrityError:
         return None
     CONNECTION.commit()
     return cursor.lastrowid
+
+
+def set_user_role(username: str, role: Role) -> bool:
+    """Change a user's role; return False if the user does not exist."""
+    cursor = CONNECTION.execute(
+        "UPDATE users SET role = ? WHERE username = ?", (role, username))
+    CONNECTION.commit()
+    return cursor.rowcount == 1

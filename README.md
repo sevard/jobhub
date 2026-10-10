@@ -30,6 +30,8 @@ Working now:
 - A logged-in account page at `/account`.
 - Password hashing with Argon2 and login sessions in an HttpOnly cookie.
 - CSRF protection on every form.
+- Roles stored on every account (`admin` or `driver`). Sign-up always creates a
+  driver; admins are created from the command line (see [Roles](#roles)).
 - A bearer-token login endpoint (`POST /token`) and a health check.
 - A `/ws` WebSocket endpoint that accepts connections (see
   [WebSocket](#websocket)).
@@ -38,8 +40,8 @@ Not implemented yet:
 
 - Ride requests ("jobs"): there is no jobs table, no publishing, editing,
   cancelling or taking, and nothing is broadcast over `/ws`.
-- Admin and driver roles. Every account is the same; there is no role chosen at
-  sign-up.
+- Anything that uses the roles yet: the admin dashboard and the driver pages do
+  not exist, so no route currently checks them.
 - The admin dashboard.
 - The driver live feed, and the job endpoints `/post`, `/feed` and
   `/api/get_jobs`.
@@ -115,6 +117,32 @@ cookie.
 - Accounts have a `disabled` flag. Disabled accounts can still log in and use
   their account page.
 
+## Roles
+
+Every account is either a `driver` or an `admin`.
+
+- **Sign-up creates drivers only.** The sign-up form has no role field, and a
+  `role` value added to the request is ignored.
+- **Admins are created from the command line**, never through the website:
+
+  ```bash
+  uv run python -m api.create_admin USERNAME            # new admin, prompts for the password
+  uv run python -m api.create_admin USERNAME --promote  # make an existing user an admin
+  ```
+
+  The password is typed at a hidden prompt, not given as an argument, and
+  follows the same rules as sign-up. An existing username is refused unless you
+  pass `--promote`, which changes only the role and keeps their password. It
+  first asks `Promote 'alice' (driver) to admin? [y/N]` and changes nothing
+  unless you answer `y` or `yes`; add `--yes` to skip the question in scripts.
+- The role is read from the database on every request, not from the login
+  token, so changing it takes effect immediately.
+- `get_current_admin` and `get_current_driver` in [api/auth.py](api/auth.py)
+  return 403 for the wrong role; they are ready for the admin and driver
+  features.
+- The `users` table has no migrations. After this change, delete an old
+  `jobhub.db` so it is recreated with the `role` column.
+
 ## HTTP API
 
 | Method | Endpoint | Description |
@@ -149,7 +177,8 @@ in-memory database.
 ```text
 api/
   main.py      FastAPI app: pages, form routes, token endpoint, WebSocket
-  auth.py      Password hashing, JWT tokens, user lookup and creation
+  auth.py      Password hashing, JWT tokens, user lookup and creation, role checks
+  create_admin.py  Command-line tool to create or promote an admin
   config.py    Shared settings: paths, templates, cookie, token and CSRF values
   db.py        SQLite connection and users table setup
   forms.py     Sign-up and log-in form models, CSRF form helpers, and the signup/login page helper

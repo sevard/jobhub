@@ -14,6 +14,7 @@ def init_db() -> None:
             username TEXT NOT NULL UNIQUE COLLATE NOCASE,
             password_hash TEXT NOT NULL,
             disabled BOOLEAN NOT NULL DEFAULT FALSE,
+            role TEXT NOT NULL DEFAULT 'driver' CHECK (role IN ('admin', 'driver')),
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
         """

@@ -1,9 +1,11 @@
 import asyncio
+import io
 import re
 import sqlite3
 import sys
 import unittest
 import warnings
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import timedelta
 from pathlib import Path
 from unittest.mock import patch
@@ -13,6 +15,7 @@ if str(BASE) not in sys.path:
     sys.path.insert(0, str(BASE))
 
 import api.auth as auth  # noqa: E402
+import api.create_admin as create_admin  # noqa: E402
 import api.db as db  # noqa: E402
 from api.forms import LoginFormData, SignupFormData  # noqa: E402
 
@@ -241,6 +244,176 @@ class CurrentUserDependencyTests(DatabaseTestCase):
         self.assertEqual(caught.exception.status_code, 400)
 
 
+class RoleTests(DatabaseTestCase):
+    def role_of(self, username):
+        return self.connection.execute(
+            "SELECT role FROM users WHERE username = ?", (username,)).fetchone()[0]
+
+    def test_users_are_drivers_by_default(self):
+        auth.create_user("alice", PASSWORD)
+
+        self.assertEqual(self.role_of("alice"), "driver")
+        self.assertEqual(auth._get_user_by_username("alice").role, "driver")
+
+    def test_trusted_code_can_create_an_admin(self):
+        auth.create_user("boss", PASSWORD, role="admin")
+
+        self.assertEqual(auth._get_user_by_username("boss").role, "admin")
+
+    def test_unknown_roles_are_rejected(self):
+        with self.assertRaises(ValueError):
+            auth.create_user("alice", PASSWORD, role="superuser")
+        self.assertIsNone(self.stored_user("alice"))
+
+    def test_database_constraint_rejects_unknown_roles(self):
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.connection.execute(
+                "INSERT INTO users (username, password_hash, role) VALUES ('x', 'h', 'superuser')")
+
+    def test_set_user_role_changes_role_and_reports_missing_users(self):
+        auth.create_user("alice", PASSWORD)
+
+        self.assertTrue(auth.set_user_role("alice", "admin"))
+        self.assertEqual(self.role_of("alice"), "admin")
+        self.assertFalse(auth.set_user_role("nobody", "admin"))
+
+    def test_role_dependencies_allow_only_the_matching_role(self):
+        auth.create_user("alice", PASSWORD)
+        auth.create_user("boss", PASSWORD, role="admin")
+        driver = auth._get_user_by_username("alice")
+        admin = auth._get_user_by_username("boss")
+
+        self.assertIs(asyncio.run(auth.get_current_driver(driver)), driver)
+        self.assertIs(asyncio.run(auth.get_current_admin(admin)), admin)
+        for dependency, user in (
+            (auth.get_current_admin, driver),
+            (auth.get_current_driver, admin),
+        ):
+            with self.assertRaises(HTTPException) as caught:
+                asyncio.run(dependency(user))
+            self.assertEqual(caught.exception.status_code, 403)
+
+    def test_role_comes_from_the_database_not_the_token(self):
+        auth.create_user("alice", PASSWORD)
+        token = auth.create_access_token({"sub": "alice", "role": "admin"})
+
+        self.assertEqual(auth.get_user_from_token(token).role, "driver")
+        auth.set_user_role("alice", "admin")
+        self.assertEqual(auth.get_user_from_token(token).role, "admin")
+
+
+class CreateAdminTests(DatabaseTestCase):
+    def run_cli(self, *argv, passwords=(PASSWORD, PASSWORD), answer="y"):
+        answers = iter(passwords)
+        stderr = io.StringIO()
+        self.asked = []
+
+        def ask(question):
+            self.asked.append(question)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+        with redirect_stderr(stderr), redirect_stdout(io.StringIO()):
+            code = create_admin.main(
+                list(argv), prompt=lambda _: next(answers), ask=ask)
+        return code, stderr.getvalue()
+
+    def role_of(self, username):
+        user = auth._get_user_by_username(username)
+        return user.role if user else None
+
+    def test_creates_an_admin_who_can_log_in(self):
+        code, _ = self.run_cli("boss")
+
+        self.assertEqual(code, 0)
+        self.assertEqual(self.role_of("boss"), "admin")
+        self.assertTrue(auth.authenticate_user("boss", PASSWORD))
+
+    def test_password_is_stored_hashed(self):
+        self.run_cli("boss")
+
+        self.assertNotIn(PASSWORD, self.stored_user("boss")[1])
+
+    def test_mismatched_confirmation_creates_nothing(self):
+        code, error = self.run_cli("boss", passwords=(PASSWORD, "different-pass"))
+
+        self.assertEqual(code, 1)
+        self.assertIn("do not match", error)
+        self.assertIsNone(self.role_of("boss"))
+
+    def test_invalid_username_or_password_creates_nothing(self):
+        for username, password in (("ab", PASSWORD), ("boss", "short")):
+            with self.subTest(username=username):
+                code, error = self.run_cli(username, passwords=(password, password))
+
+                self.assertEqual(code, 1)
+                self.assertIn("Invalid", error)
+                self.assertIsNone(self.role_of(username))
+
+    def test_existing_user_is_not_changed_without_promote(self):
+        auth.create_user("alice", PASSWORD)
+
+        code, error = self.run_cli("alice")
+
+        self.assertEqual(code, 1)
+        self.assertIn("--promote", error)
+        self.assertEqual(self.role_of("alice"), "driver")
+
+    def test_promote_asks_for_confirmation_then_keeps_password(self):
+        auth.create_user("alice", PASSWORD)
+
+        code, _ = self.run_cli("alice", "--promote", passwords=())
+
+        self.assertEqual(code, 0)
+        self.assertEqual(len(self.asked), 1)
+        self.assertIn("'alice' (driver)", self.asked[0])
+        self.assertEqual(self.role_of("alice"), "admin")
+        self.assertTrue(auth.authenticate_user("alice", PASSWORD))
+
+    def test_promote_accepts_yes_in_any_case(self):
+        auth.create_user("alice", PASSWORD)
+
+        code, _ = self.run_cli("alice", "--promote", passwords=(), answer=" YES ")
+
+        self.assertEqual(code, 0)
+        self.assertEqual(self.role_of("alice"), "admin")
+
+    def test_promote_is_cancelled_unless_the_answer_is_yes(self):
+        auth.create_user("alice", PASSWORD)
+        for answer in ("", "n", "no", "maybe", EOFError()):
+            with self.subTest(answer=repr(answer)):
+                code, error = self.run_cli(
+                    "alice", "--promote", passwords=(), answer=answer)
+
+                self.assertEqual(code, 1)
+                self.assertIn("Cancelled", error)
+                self.assertEqual(self.role_of("alice"), "driver")
+
+    def test_promote_with_yes_flag_skips_the_prompt(self):
+        auth.create_user("alice", PASSWORD)
+
+        code, _ = self.run_cli("alice", "--promote", "--yes", passwords=())
+
+        self.assertEqual(code, 0)
+        self.assertEqual(self.asked, [])
+        self.assertEqual(self.role_of("alice"), "admin")
+
+    def test_promoting_an_admin_needs_no_prompt(self):
+        auth.create_user("boss", PASSWORD, role="admin")
+
+        code, _ = self.run_cli("boss", "--promote", passwords=())
+
+        self.assertEqual(code, 0)
+        self.assertEqual(self.asked, [])
+
+    def test_promote_unknown_user_fails(self):
+        code, error = self.run_cli("nobody", "--promote", passwords=())
+
+        self.assertEqual(code, 1)
+        self.assertIn("does not exist", error)
+
+
 class WebTestCase(DatabaseTestCase):
     def setUp(self):
         super().setUp()
@@ -293,6 +466,22 @@ class SignupRouteTests(WebTestCase):
         self.signup()
 
         self.assertNotIn(PASSWORD, self.stored_user("alice")[1])
+
+    def test_signup_always_creates_a_driver(self):
+        self.signup()
+
+        self.assertEqual(auth._get_user_by_username("alice").role, "driver")
+
+    def test_forged_role_field_in_signup_is_ignored(self):
+        for forged in ("admin", "superuser"):
+            with self.subTest(role=forged):
+                username = f"user_{forged}"
+                response = self.post_form(
+                    "/signup", page="/signup",
+                    username=username, password=PASSWORD, role=forged)
+
+                self.assertEqual(response.status_code, 303)
+                self.assertEqual(auth._get_user_by_username(username).role, "driver")
 
     def test_duplicate_username_is_a_conflict_and_keeps_username(self):
         self.signup()
