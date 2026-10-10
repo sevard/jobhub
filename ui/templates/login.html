@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}JobHub - Log in{% endblock %}
+{% block content %}
+<div class="container py-5" style="max-width: 480px;">
+    <div class="mb-4">
+        <h1 class="mb-1">Log in</h1>
+        <p class="text-muted mb-0">Log in to your account.</p>
+    </div>
+
+    <div class="card shadow-lg border-0 rounded-4">
+        <div class="card-body p-4">
+            <form method="post" action="/login">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+                <div class="form-floating mb-3">
+                    <input type="text" id="usernameInput" name="username" class="form-control" placeholder="Username"
+                        autocomplete="username" value="{{ username }}" maxlength="32" required>
+                    <label for="usernameInput">Username</label>
+                </div>
+
+                <div class="form-floating mb-3">
+                    <input type="password" id="passwordInput" name="password" class="form-control"
+                        placeholder="Password" autocomplete="current-password" maxlength="128" required>
+                    <label for="passwordInput">Password</label>
+                </div>
+
+                {% if created %}
+                <div class="text-success small mb-3" role="status">
+                    Account created. Log in to continue.
+                </div>
+                {% endif %}
+
+                {% if error %}
+                <div class="text-danger small mb-3" role="alert">{{ error }}</div>
+                {% endif %}
+
+                <button type="submit" class="btn btn-primary rounded-pill px-4 w-100">Log in</button>
+            </form>
+
+            <p class="text-center text-muted small mt-3 mb-0">
+                No account yet? <a href="/signup">Sign up</a>
+            </p>
+        </div>
+    </div>
+</div>
+{% endblock %}

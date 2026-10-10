@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}JobHub{% endblock %}
+{% block content %}
+<div class="container py-5" style="max-width: 480px;">
+    <div class="mb-4">
+        <h1 class="mb-1">JobHub</h1>
+        <p class="text-muted mb-0">Ride request board.</p>
+    </div>
+
+    <div class="card shadow-lg border-0 rounded-4">
+        <div class="card-body p-4">
+            <p class="text-muted mb-4">Log in or create an account to get started.</p>
+            <a class="btn btn-primary rounded-pill px-4 w-100 mb-2" href="/login">Log in</a>
+            <a class="btn btn-outline-primary rounded-pill px-4 w-100" href="/signup">Sign up</a>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,8 @@
+[auth]
+# Key used to sign login tokens. Generate one with:
+#   python -c "import secrets; print(secrets.token_hex(32))"
+secret_key = change-me
+
+[app]
+# true enables development mode (auto-reload when started with python -m api.main)
+development = false

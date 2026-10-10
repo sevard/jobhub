@@ -1,5 +1,6 @@
 # Ignore files 
 killer.txt
+keep
 
 # Python-generated files
 __pycache__/
@@ -14,3 +15,6 @@ wheels/
 
 # sqlite database files
 *.db
+
+# Local secrets (copy config.ini.example to config.ini)
+config.ini

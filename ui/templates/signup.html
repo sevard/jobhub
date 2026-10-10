@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}JobHub - Sign up{% endblock %}
+{% block content %}
+<div class="container py-5" style="max-width: 480px;">
+    <div class="mb-4">
+        <h1 class="mb-1">Sign up</h1>
+        <p class="text-muted mb-0">Create your account.</p>
+    </div>
+
+    <div class="card shadow-lg border-0 rounded-4">
+        <div class="card-body p-4">
+            <form method="post" action="/signup">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+                <div class="form-floating mb-3">
+                    <input type="text" id="usernameInput" name="username" class="form-control" placeholder="Username"
+                        autocomplete="username" value="{{ username }}" minlength="3" maxlength="32"
+                        pattern="[A-Za-z0-9_]+" required>
+                    <label for="usernameInput">Username</label>
+                </div>
+
+                <div class="form-floating mb-3">
+                    <input type="password" id="passwordInput" name="password" class="form-control"
+                        placeholder="Password" autocomplete="new-password" minlength="8" maxlength="128" required>
+                    <label for="passwordInput">Password</label>
+                </div>
+
+                {% if error %}
+                    <div class="text-danger small mb-3" role="alert">{{ error }}</div>
+                {% endif %}
+
+                <button type="submit" class="btn btn-primary rounded-pill px-4 w-100">Sign up</button>
+            </form>
+
+            <a class="btn btn-outline-primary rounded-pill px-4 w-100 mt-2" href="/login">
+                Already have an account? Log in</a>
+
+            <p class="text-muted small mt-3 mb-0">
+                Username: 3-32 letters, digits or underscores. Password: at least 8 characters.</p>
+        </div>
+    </div>
+</div>
+{% endblock %}

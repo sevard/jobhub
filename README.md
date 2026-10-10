@@ -1,17 +1,53 @@
 # JobHub
 
-JobHub is a lightweight ride-request board. Users can pickup and
-drop-off requests, see and follow all requests in a live feed. 
-The FastAPI backend stores requests in (for now) SQLite and
-broadcasts updates to connected browsers over WebSockets.
+JobHub is a lightweight ride-request board built for **drivers**. An admin
+publishes a ride request manually, and every eligible driver sees it in real
+time, without refreshing the browser. Drivers can take a ride request and
+cancel it if an emergency comes up. The FastAPI backend stores data in (for
+now) SQLite and is designed to broadcast updates to connected browsers over
+WebSockets.
 
-## Features
+> **Status: early development.** Account handling (sign-up, login, logout) is
+> in place. The ride-request features described below are not implemented yet;
+> see [Current status](#current-status).
 
-- Publish requests with a pickup time, pickup location, drop-off location, and
-  optional note.
-- View and delete requests created in the current browser session.
-- Watch all requests in the live feed.
-- Persist requests locally in `relay.db`.
+## How it works (target design)
+
+1. An admin publishes a ride request (pickup time, pickup and drop-off
+   locations, optional note).
+2. All eligible drivers see the request appear instantly in their live feed
+   over a WebSocket connection.
+3. A driver takes the request.
+4. If something comes up, the driver cancels it so another driver can take it.
+5. The admin can edit or cancel a published request at any time; drivers see
+   the change in real time.
+
+## Current status
+
+Working now:
+
+- Sign up, log in and log out through server-rendered forms.
+- A logged-in account page at `/account`.
+- Password hashing with Argon2 and login sessions in an HttpOnly cookie.
+- CSRF protection on every form.
+- A bearer-token login endpoint (`POST /token`) and a health check.
+- A `/ws` WebSocket endpoint that accepts connections (see
+  [WebSocket](#websocket)).
+
+Not implemented yet:
+
+- Ride requests ("jobs"): there is no jobs table, no publishing, editing,
+  cancelling or taking, and nothing is broadcast over `/ws`.
+- Admin and driver roles. Every account is the same; there is no role chosen at
+  sign-up.
+- The admin dashboard.
+- The driver live feed, and the job endpoints `/post`, `/feed` and
+  `/api/get_jobs`.
+- Limiting visibility to eligible drivers.
+
+Two scripts from the earlier dispatcher/driver version, `ui/static/feed.js` and
+`ui/static/post.js`, still exist but are not used by any page. They are reference
+material for the planned features.
 
 ## Requirements
 
@@ -20,104 +56,107 @@ broadcasts updates to connected browsers over WebSockets.
 
 ## Run locally
 
-From the project root, install the locked dependencies and start the server:
+From the project root, install the locked dependencies, create your local
+config and start the server:
 
 ```bash
 uv sync
-uv run python -m api.app
+cp config.ini.example config.ini   # then set a real secret_key in config.ini
+uv run fastapi run --port 8080
 ```
 
-Open <http://127.0.0.1:8001/post> (create jobs) or <http://127.0.0.1:8001/feed> (view jobs) in your browser. The server listens on port
-`8001`. Stop it with `Ctrl+C`.
-
-For development with automatic reload, set `APP_ENV` to `development` before
-starting:
+Open <http://127.0.0.1:8080/>. Stop the server with `Ctrl+C`. For development
+with automatic reload, use:
 
 ```bash
-APP_ENV=development uv run python -m api.app
+uv run fastapi dev --port 8080
 ```
+
+The app entrypoint (`api.main:app`) is declared under `[tool.fastapi]` in
+`pyproject.toml`.
+
+## Configuration
+
+| Variable | Purpose |
+| --- | --- |
+| `CSRF_SECRET` | Secret used to sign CSRF tokens. If unset, a random one is generated at every start, so open forms stop working after a restart |
+
+The token signing key is read from `config.ini` in the project root (section
+`[auth]`, option `secret_key`). `config.ini` is git-ignored, and the app refuses
+to start without it. `config.ini.example` is the committed template.
+
+Setting `development = true` under `[app]` turns on development mode
+(`app.state.development_mode`, and auto-reload when started with
+`python -m api.main`). It defaults to `false`. The 24-hour session lifetime is set
+in [api/config.py](api/config.py).
 
 ## Application pages
 
 | URL | Description |
 | --- | --- |
-| `/` | Landing page with a login link (redirects to the account home when logged in) |
-| `/account` | Log in or sign up (redirects to the account home when already logged in) |
-| `/account/home` | Redirects a logged-in user to their role's account page (`/account` if logged out) |
-| `/account/dispatcher` | Dispatcher account page, linking to `/post` (other roles are redirected to their own page) |
-| `/account/driver` | Driver account page, linking to `/feed` (other roles are redirected to their own page) |
-| `/post` | Dispatchers only: post requests and see and delete all requests (others are redirected) |
-| `/feed` | Live feed of all requests (login required; redirects to `/account` otherwise) |
+| `/` | Landing page with log in and sign up links (redirects to `/account` when logged in) |
+| `/signup` | Sign-up form |
+| `/login` | Log-in form (redirects to `/account` when already logged in) |
+| `/account` | Account page (redirects to `/login` when logged out) |
 | `/docs` | Interactive FastAPI API documentation |
 
-## Roles
+Form submissions: `POST /signup`, `POST /login` and `POST /logout`. Each form
+carries a hidden `csrf_token` field that must match the `fastapi-csrf-token`
+cookie.
 
-Every account has a role, chosen at sign-up:
+## Accounts
 
-- **dispatcher**: can open `/post`, create jobs, and delete any job.
-- **driver**: can browse available jobs at `/feed`; cannot create or delete jobs.
+- Username: 3-32 letters, digits or `_` (case-insensitive and unique).
+- Password: 8-128 characters, stored as an Argon2 hash.
+- A successful login sets an HttpOnly, `SameSite=Lax` `auth_token` cookie
+  holding a JWT that expires after 24 hours.
+- Sign-up and log-in forms that fail validation are shown again with an error,
+  and the log-in page gives the same generic message for any failure.
+- Accounts have a `disabled` flag. Disabled accounts can still log in and use
+  their account page.
 
-Logged-out visitors are redirected to `/account` and drivers to `/account/home` from the dispatcher-only pages and forms. Accounts created before roles existed become drivers.
-
-## HTTP API (read-only)
+## HTTP API
 
 | Method | Endpoint | Description |
 | --- | --- | --- |
 | `GET` | `/api/health` | Health check |
-| `GET` | `/api/info` | Service status and WebSocket information |
-| `GET` | `/api/get_jobs` | List requests (login required) |
-| `WS` | `/ws` | Receive-only job event stream (login required) |
+| `POST` | `/token` | OAuth2 password login; returns a bearer access token |
+| `WS` | `/ws` | WebSocket endpoint (currently no events are sent) |
 
-Jobs are created and deleted only through the dispatcher forms (`POST /post`, `POST /post/delete/{id}`); there is no JSON API for them.
-`pickup_time`, `pickup_location` and `dropoff_location` are required; `note` is optional. Only dispatchers can create or delete requests; each request records the
-posting account as `user_id`.
-
-CSRF protection uses `fastapi_csrf_protect`. The UI uses server-rendered forms
-(`/account/login|signup|logout`, `POST /post`, `POST /post/delete/{id}`), each
-carrying a hidden `csrf_token` field. Accounts are managed only through these
-forms (username 3-32 letters, digits or `_`; password 8-128 characters; `role`
-is `dispatcher` or `driver`). The token must match the `fastapi-csrf-token` cookie.
+`/api/info` and `/api/get_jobs` from the earlier version no longer exist.
 
 ## WebSocket
 
-Connect to `/ws` over `ws://` or, when served over HTTPS, `wss://`. Only logged-in
-users may connect; unauthenticated connections are closed with code 1008. The
-WebSocket is receive-only: it pushes JSON events when requests are created or
-deleted and ignores messages from clients. Requests must be created or deleted
-through the HTTP API. Clients reconnect and reload the job history to recover
-events missed while disconnected. A newly created request is sent in this shape:
-
-```json
-{
-  "type": "message",
-  "id": 1,
-  "user_id": 1,
-  "pickup_time": "2026-10-04T15:30:00",
-  "pickup_location": "Airport",
-  "dropoff_location": "Downtown",
-  "note": "One passenger"
-}
-```
-
-Deletion events have the form `{"type":"delete","id":1}`.
+`/ws` accepts a connection and keeps it open, ignoring anything the client
+sends. The `ConnectionManager` in [api/main.py](api/main.py) can broadcast to
+all connected clients, but nothing calls it yet, and the endpoint does not check
+that the user is logged in. Requiring login and sending ride-request events are
+part of the planned work.
 
 ## Tests
-
-Run the test suite from the project root:
 
 ```bash
 uv run python -m unittest discover -s tests -q
 ```
 
+`tests/test_auth.py` covers the account code: password hashing, user creation,
+authentication, tokens, the current-user dependencies, the sign-up, log-in and
+log-out routes, the account page, `/token` and `/api/health`. It runs against an
+in-memory database.
+
 ## Project layout
 
 ```text
 api/
-  app.py       FastAPI routes, WebSocket relay, and server startup
-  db.py        SQLite persistence
+  main.py      FastAPI app: pages, form routes, token endpoint, WebSocket
+  auth.py      Password hashing, JWT tokens, user lookup and creation
+  config.py    Shared settings: paths, templates, cookie, token and CSRF values
+  db.py        SQLite connection and users table setup
+  forms.py     Sign-up and log-in form models, CSRF form helpers, and the signup/login page helper
 tests/         Backend tests
 ui/
   templates/   Jinja2 page templates
   static/      Browser JavaScript, CSS, and icons
-
+config.ini    Local secrets (not committed; copy from config.ini.example)
+jobhub.db      SQLite database, created on first start (not committed)
 ```
