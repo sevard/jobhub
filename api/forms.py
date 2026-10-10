@@ -1,11 +1,13 @@
 from fastapi import Request
 from fastapi_csrf_protect.flexible import CsrfProtect
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, NaiveDatetime
 
 from api.config import templates
 
 USERNAME_MAX_LENGTH = 32
 USERNAME_PATTERN = r"^[A-Za-z0-9_]+$"
+RIDE_LOCATION_MAX_LENGTH = 200
+RIDE_NOTES_MAX_LENGTH = 500
 
 
 class SignupFormData(BaseModel):
@@ -18,6 +20,16 @@ class LoginFormData(BaseModel):
     username: str = Field(
         min_length=3, max_length=USERNAME_MAX_LENGTH, pattern=USERNAME_PATTERN)
     password: str = Field(min_length=8, max_length=128)
+
+
+class RideFormData(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    pickup_location: str = Field(min_length=1, max_length=RIDE_LOCATION_MAX_LENGTH)
+    dropoff_location: str = Field(min_length=1, max_length=RIDE_LOCATION_MAX_LENGTH)
+    # A local date and time from the browser, without a time zone
+    pickup_time: NaiveDatetime
+    notes: str = Field(default="", max_length=RIDE_NOTES_MAX_LENGTH)
 
 
 def template_response_with_csrf(

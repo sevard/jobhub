@@ -12,5 +12,8 @@
             <button type="submit" class="btn btn-outline-secondary rounded-pill px-3">Log out</button>
         </form>
     </div>
+    {% if user.role == "admin" %}
+    <a class="btn btn-primary rounded-pill px-4" href="/admin">Admin dashboard</a>
+    {% endif %}
 </div>
 {% endblock %}

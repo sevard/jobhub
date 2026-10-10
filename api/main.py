@@ -37,17 +37,23 @@ from api.config import (
 )
 from api.db import init_db
 from api.forms import (
+    RIDE_LOCATION_MAX_LENGTH,
+    RIDE_NOTES_MAX_LENGTH,
     LoginFormData,
+    RideFormData,
     SignupFormData,
     _auth_page,
     template_response_with_csrf,
     validate_form_csrf,
 )
+from api.rides import create_ride, list_rides
 from api.auth import (
     Token,
+    UserInDB,
     authenticate_user,
     create_access_token,
     create_user,
+    get_admin_from_cookie,
     get_current_user,
 )
 
@@ -144,6 +150,26 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
             "signup.html",
             error="Username: 3-32 letters, digits or underscores. Password: 8-128 characters.",
             username=body.get("username", ""),
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        )
+    if request.method == "POST" and request.url.path == "/admin/rides":
+        # The admin check ran before validation, so this only fails if the session just ended
+        admin = await get_admin_from_cookie(request)
+        return _admin_page(
+            request,
+            CsrfProtect(),
+            admin,
+            error=(
+                "Enter a pickup and drop-off location (up to "
+                f"{RIDE_LOCATION_MAX_LENGTH} characters), a valid pickup date and time, "
+                f"and notes of up to {RIDE_NOTES_MAX_LENGTH} characters."
+            ),
+            form={
+                "pickup_location": str(body.get("pickup_location", ""))[:RIDE_LOCATION_MAX_LENGTH],
+                "dropoff_location": str(body.get("dropoff_location", ""))[:RIDE_LOCATION_MAX_LENGTH],
+                "pickup_time": str(body.get("pickup_time", ""))[:32],
+                "notes": str(body.get("notes", ""))[:RIDE_NOTES_MAX_LENGTH],
+            },
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
     return await request_validation_exception_handler(request, exc)
@@ -247,6 +273,59 @@ async def get_account(request: Request, csrf_protect: CsrfProtect = Depends()):
     except HTTPException:
         return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
     return template_response_with_csrf(request, "home.html", {"user": user}, csrf_protect)
+
+
+def _admin_page(
+    request: Request,
+    csrf_protect: CsrfProtect,
+    admin: UserInDB,
+    error: str = "",
+    form: dict | None = None,
+    created: bool = False,
+    status_code: int = 200,
+):
+    return template_response_with_csrf(
+        request,
+        "admin.html",
+        {
+            "user": admin,
+            "rides": list_rides(),
+            "error": error,
+            "form": form or {},
+            "created": created,
+        },
+        csrf_protect,
+        status_code,
+    )
+
+
+@app.get("/admin", include_in_schema=False)
+async def get_admin_page(
+    request: Request,
+    csrf_protect: Annotated[CsrfProtect, Depends()],
+    admin: Annotated[UserInDB, Depends(get_admin_from_cookie)],
+    created: bool = False,
+):
+    """Admin dashboard: the ride request form and the list of ride requests."""
+    return _admin_page(request, csrf_protect, admin, created=created)
+
+
+@app.post("/admin/rides", include_in_schema=False)
+async def post_ride(
+    request: Request,
+    csrf_protect: Annotated[CsrfProtect, Depends()],
+    admin: Annotated[UserInDB, Depends(get_admin_from_cookie)],
+    form: Annotated[RideFormData, Form()],
+):
+    await validate_form_csrf(request, csrf_protect)
+    create_ride(
+        form.pickup_location,
+        form.dropoff_location,
+        form.pickup_time,
+        form.notes,
+        created_by=admin.id,
+    )
+    return RedirectResponse("/admin?created=true", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @app.post("/token")

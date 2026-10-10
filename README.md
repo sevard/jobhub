@@ -32,19 +32,18 @@ Working now:
 - CSRF protection on every form.
 - Roles stored on every account (`admin` or `driver`). Sign-up always creates a
   driver; admins are created from the command line (see [Roles](#roles)).
+- An admin dashboard at `/admin` where an admin creates ride requests (see
+  [Ride requests](#ride-requests)).
 - A bearer-token login endpoint (`POST /token`) and a health check.
 - A `/ws` WebSocket endpoint that accepts connections (see
   [WebSocket](#websocket)).
 
 Not implemented yet:
 
-- Ride requests ("jobs"): there is no jobs table, no publishing, editing,
-  cancelling or taking, and nothing is broadcast over `/ws`.
-- Anything that uses the roles yet: the admin dashboard and the driver pages do
-  not exist, so no route currently checks them.
-- The admin dashboard.
-- The driver live feed, and the job endpoints `/post`, `/feed` and
-  `/api/get_jobs`.
+- Editing and cancelling ride requests, and drivers taking or cancelling them.
+- Broadcasting new ride requests over `/ws`: a ride created by an admin is not
+  pushed to anyone yet.
+- The driver pages and live feed, and any read endpoint for ride requests.
 - Limiting visibility to eligible drivers.
 
 Two scripts from the earlier dispatcher/driver version, `ui/static/feed.js` and
@@ -99,10 +98,11 @@ in [api/config.py](api/config.py).
 | `/` | Landing page with log in and sign up links (redirects to `/account` when logged in) |
 | `/signup` | Sign-up form |
 | `/login` | Log-in form (redirects to `/account` when already logged in) |
-| `/account` | Account page (redirects to `/login` when logged out) |
+| `/account` | Account page (redirects to `/login` when logged out); admins also see a link to the dashboard |
+| `/admin` | Admin dashboard: new ride request form and the list of ride requests (admins only) |
 | `/docs` | Interactive FastAPI API documentation |
 
-Form submissions: `POST /signup`, `POST /login` and `POST /logout`. Each form
+Form submissions: `POST /signup`, `POST /login`, `POST /logout` and `POST /admin/rides`. Each form
 carries a hidden `csrf_token` field that must match the `fastapi-csrf-token`
 cookie.
 
@@ -143,6 +143,31 @@ Every account is either a `driver` or an `admin`.
 - The `users` table has no migrations. After this change, delete an old
   `jobhub.db` so it is recreated with the `role` column.
 
+## Ride requests
+
+An admin creates a ride request on the dashboard at `/admin`. Each ride request has:
+
+| Field | Rules |
+| --- | --- |
+| Pickup location | Required, up to 200 characters |
+| Drop-off location | Required, up to 200 characters |
+| Pickup date and time | Required, a local date and time without a time zone (the form uses a browser date-time picker) |
+| Notes | Optional, up to 500 characters |
+| Available | Not on the form: set automatically, `true` for a new ride request (a ride a driver can still take) |
+
+Leading and trailing spaces are trimmed. The ride is also stored with the id of
+the admin who created it. The dashboard lists all ride requests, earliest pickup
+first, with an Available column.
+
+- `GET /admin` and `POST /admin/rides` are for admins only. Logged-out visitors are
+  redirected to `/login`, and drivers get a 403.
+- Ride requests are created only through the HTML form with CSRF protection;
+  there is no JSON route for writing them.
+- An invalid submission shows the dashboard again with an error and keeps what
+  was typed. Nothing is stored.
+- The pickup time is not checked against the current time, so a time in the past
+  is accepted.
+
 ## HTTP API
 
 | Method | Endpoint | Description |
@@ -168,9 +193,14 @@ uv run python -m unittest discover -s tests -q
 ```
 
 `tests/test_auth.py` covers the account code: password hashing, user creation,
-authentication, tokens, the current-user dependencies, the sign-up, log-in and
-log-out routes, the account page, `/token` and `/api/health`. It runs against an
-in-memory database.
+authentication, tokens, roles, the `create_admin` tool, the current-user
+dependencies, the sign-up, log-in and log-out routes, the account page, `/token`
+and `/api/health`.
+
+`tests/test_rides.py` covers ride request storage and the admin dashboard: access
+control, creating a ride, validation and CSRF.
+
+Both run against an in-memory database.
 
 ## Project layout
 
@@ -179,9 +209,10 @@ api/
   main.py      FastAPI app: pages, form routes, token endpoint, WebSocket
   auth.py      Password hashing, JWT tokens, user lookup and creation, role checks
   create_admin.py  Command-line tool to create or promote an admin
+  rides.py     Ride request storage (create and list)
   config.py    Shared settings: paths, templates, cookie, token and CSRF values
-  db.py        SQLite connection and users table setup
-  forms.py     Sign-up and log-in form models, CSRF form helpers, and the signup/login page helper
+  db.py        SQLite connection and users and rides table setup
+  forms.py     Sign-up, log-in and ride request form models, CSRF form helpers, and the signup/login page helper
 tests/         Backend tests
 ui/
   templates/   Jinja2 page templates

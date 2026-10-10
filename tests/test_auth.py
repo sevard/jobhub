@@ -17,6 +17,7 @@ if str(BASE) not in sys.path:
 import api.auth as auth  # noqa: E402
 import api.create_admin as create_admin  # noqa: E402
 import api.db as db  # noqa: E402
+import api.rides as rides  # noqa: E402
 from api.forms import LoginFormData, SignupFormData  # noqa: E402
 
 warnings.filterwarnings("ignore", message=".*httpx.*")
@@ -36,8 +37,8 @@ class DatabaseTestCase(unittest.TestCase):
 
     def setUp(self):
         self.connection = sqlite3.connect(":memory:", check_same_thread=False)
-        # auth.py imports CONNECTION by name, so both modules must be patched
-        for module in (db, auth):
+        # these modules import CONNECTION by name, so each must be patched
+        for module in (db, auth, rides):
             patcher = patch.object(module, "CONNECTION", self.connection)
             patcher.start()
             self.addCleanup(patcher.stop)

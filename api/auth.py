@@ -3,13 +3,13 @@ from datetime import datetime, timedelta, timezone
 from typing import Annotated, Literal, Optional, get_args
 
 import jwt
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from jwt.exceptions import InvalidTokenError
 from pwdlib import PasswordHash
 from pydantic import BaseModel
 
-from api.config import ALGORITHM, SECRET_KEY
+from api.config import ALGORITHM, AUTH_COOKIE, SECRET_KEY
 from api.db import CONNECTION
 
 
@@ -34,6 +34,7 @@ class User(BaseModel):
 
 
 class UserInDB(User):
+    id: int
     hashed_password: str
 
 
@@ -50,7 +51,7 @@ def get_password_hash(password: str) -> str:
 
 def _get_user_by_username(username: str):
     row = CONNECTION.execute(
-        "SELECT username, password_hash, disabled, role FROM users WHERE username = ?",
+        "SELECT username, password_hash, disabled, role, id FROM users WHERE username = ?",
         (username,),
     ).fetchone()
     if row:
@@ -59,6 +60,7 @@ def _get_user_by_username(username: str):
             hashed_password=row[1],
             disabled=bool(row[2]),
             role=row[3],
+            id=row[4],
         )
     return None
 
@@ -114,7 +116,7 @@ async def get_current_user(token: Annotated[str | None, Depends(oauth2_scheme)])
 
 
 async def get_current_active_user(
-    current_user: Annotated[User, Depends(get_current_user)],
+    current_user: Annotated[UserInDB, Depends(get_current_user)],
 ):
     if current_user.disabled:
         raise HTTPException(
@@ -123,7 +125,7 @@ async def get_current_active_user(
 
 
 async def get_current_admin(
-    current_user: Annotated[User, Depends(get_current_user)],
+    current_user: Annotated[UserInDB, Depends(get_current_user)],
 ):
     if current_user.role != "admin":
         raise HTTPException(
@@ -132,12 +134,26 @@ async def get_current_admin(
 
 
 async def get_current_driver(
-    current_user: Annotated[User, Depends(get_current_user)],
+    current_user: Annotated[UserInDB, Depends(get_current_user)],
 ):
     if current_user.role != "driver":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail="Driver access required")
     return current_user
+
+
+async def get_admin_from_cookie(request: Request) -> UserInDB:
+    """The admin behind the auth cookie, for HTML pages.
+
+    Logged-out visitors are redirected to /login; other users get a 403.
+    """
+    try:
+        user = await get_current_user(request.cookies.get(AUTH_COOKIE))
+    except HTTPException:
+        raise HTTPException(
+            status_code=status.HTTP_303_SEE_OTHER, headers={"Location": "/login"}
+        ) from None
+    return await get_current_admin(user)
 
 
 def create_user(

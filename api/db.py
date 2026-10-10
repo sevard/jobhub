@@ -19,4 +19,18 @@ def init_db() -> None:
         )
         """
     )
+    CONNECTION.execute(
+        """
+        CREATE TABLE IF NOT EXISTS rides (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pickup_location TEXT NOT NULL,
+            dropoff_location TEXT NOT NULL,
+            pickup_time TEXT NOT NULL,
+            notes TEXT NOT NULL DEFAULT '',
+            available BOOLEAN NOT NULL DEFAULT TRUE,
+            created_by INTEGER NOT NULL REFERENCES users(id),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
     CONNECTION.commit()
