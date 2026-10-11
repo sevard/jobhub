@@ -3,35 +3,23 @@
 ## Unreleased
 
 ### Added
-- `/ws` now accepts only logged-in users; other connections are closed with code 1008.
-- Account roles: `dispatcher` and `driver`, chosen at sign-up. Only dispatchers can open `/post`, create jobs and delete any job; the account home shows a role-specific link. Existing accounts default to driver.
-- User accounts: sign up, log in and log out with a username and password (`/account`, `/account/signup`, `/account/login`, `/account/logout`). After login the user lands on the account home page (`/account/home`). Passwords are hashed with scrypt and logins use an HttpOnly cookie.
-- README.md covering features, setup, pages, HTTP API, WebSocket events, tests and layout.
-- Structured ride-request board: a `jobs` table, `JobPayload` validation (pickup time and locations), and new post/feed pages with forms and live feeds.
-- Tests for the job endpoints, a receive-only WebSocket.
+- Admin dashboard at `/admin` where an admin creates ride requests (pickup location, drop-off location, pickup date and time, notes) and sees the list. Rides are stored in a new `rides` table (`api/rides.py`); there is no JSON route for creating them.
+- Account roles, `admin` and `driver`. Sign-up always creates a driver; admins are created or promoted with `uv run python -m api.create_admin USERNAME`. Roles are read from the database and enforced with `get_current_admin` and `get_current_driver`.
+- Accounts: sign up, log in and log out through server-rendered forms, a logged-in `/account` page, and an OAuth2 `POST /token` login. Passwords are hashed with Argon2 and a login sets an HttpOnly, `SameSite=Lax` `auth_token` cookie holding a 24-hour JWT.
+- CSRF protection on every form.
+- A receive-only `/ws` WebSocket (nothing is broadcast yet) and `GET /api/health`.
+- Configuration in a git-ignored `config.ini` (see `config.ini.example`) for the JWT secret key and the development flag.
+- Tests for accounts, roles and ride creation (`uv run python -m unittest discover -s tests -q`).
 
 ### Changed
-- Removed the JSON `/api/post_job` and `/api/delete_job/{id}` routes; jobs are created and deleted only through the `/post` forms.
-- Removed the JSON `/api/signup`, `/api/login` and `/api/logout` routes; accounts use only the `/account/*` form routes.
-- Restored the receive-only `/ws` WebSocket in place of `/api/events`; `/api/info` reports `websocket_endpoints`.
-- Split the account home into separate dispatcher and driver pages (`/account/dispatcher`, `/account/driver`). `/account/home` now redirects to the page for the user's role, and each page redirects users of the other role.
-- Jobs are now tied to the posting account (`jobs.user_id`) instead of the anonymous `session_id` cookie, which is no longer set. Existing databases are migrated automatically; old jobs get a null `user_id`. The `session_id` field in job events is now `user_id`.
-- Removed the unused `own_only` option and `my_session_id` field from `GET /api/get_jobs`; it no longer sets the anonymous `session_id` cookie.
-- `/feed` and `/api/get_jobs` now require a logged-in user.
-- Dispatchers see all jobs on `/post` and can delete any job (previously only the creating session could).
-- Converted the generic message relay into a ride-request board; `AGENTS.md` URLs and endpoint list updated.
-- The `/ws` WebSocket is now receive-only. Jobs are created only through HTTP, which requires a valid pickup time and locations.
-- The post page heading is now "Current jobs".
-
-### Fixed
-- Malformed `href` on the Back link in `post.html`.
+- Reworked the app into a FastAPI service split into `api/main.py`, `auth.py`, `config.py`, `db.py`, `forms.py` and `rides.py`, with Jinja2 templates in `ui/templates/`.
+- The server runs on port 8080 by default.
 
 ### Removed
-- Gemini integration: `google-genai` dependency, `api/genai.py` and `config.ini` (which held a plaintext API key; rotate it if it was live).
-- `patch_post.py` (one-off script) and the unused `main.py`.
+- The earlier dispatcher/driver job board: the `dispatcher` role (replaced by `admin`), the `jobs` table, the `/post`, `/feed` and `/account/*` routes, the `/api/get_jobs` endpoint, the old templates and tests, and scrypt password hashing (replaced by Argon2). There is no migration; delete an old `jobhub.db` after upgrading.
+- Unused leftovers from that version: `ui/static/feed.js`, `ui/static/post.js` and `REVIEW-app.md` (a review of the deleted `api/app.py`).
 
 ### Known issues
-- No migration from the old `messages` table to `jobs`.
-- The HTTP API does not reject empty or whitespace-only locations.
-- The Flatpickr form reset may leave stale state.
-- A `file:///` console security warning on `/post` appears only in Firefox with extensions enabled; it does not occur in a private window or in Chrome. The app has no `file:` references, so the cause is a Firefox extension and no code change is needed.
+- Ride requests cannot yet be edited, cancelled, taken or cancelled by drivers, or read through an API.
+- Nothing is broadcast over `/ws`, and `/ws` does not yet require a logged-in user.
+- There are no database migrations.

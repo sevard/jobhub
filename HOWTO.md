@@ -5,10 +5,12 @@
 Start the server from the project root with:
 
 ```bash
-uv run python -m api.main
+uv run fastapi run --port 8080
 ```
 
-Then open http://127.0.0.1:8001/post (create jobs) or http://127.0.0.1:8001/feed (view posted jobs). Health check: `/api/health`.
+For development with hot reload, use `uv run fastapi dev --port 8080`.
+
+Then open http://127.0.0.1:8080/. Health check: `/api/health`.
 
 ## Running tests
 

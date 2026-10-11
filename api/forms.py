@@ -1,4 +1,5 @@
 from fastapi import Request
+from fastapi.responses import HTMLResponse
 from fastapi_csrf_protect.flexible import CsrfProtect
 from pydantic import BaseModel, ConfigDict, Field, NaiveDatetime
 
@@ -38,7 +39,7 @@ def template_response_with_csrf(
     context: dict,
     csrf_protect: CsrfProtect,
     status_code: int = 200,
-):
+) -> HTMLResponse:
     csrf_token, signed_token = csrf_protect.generate_csrf_tokens()
     response = templates.TemplateResponse(
         request,
@@ -75,7 +76,7 @@ def _auth_page(
     username: str = "",
     status_code: int = 200,
     **context,
-):
+) -> HTMLResponse:
     """Render the signup or login page (`signup.html` or `login.html`)."""
     return template_response_with_csrf(
         request,

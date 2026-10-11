@@ -51,11 +51,9 @@ Code layout:
 - Use the existing roles on the server for the admin dashboard and driver features; limit visibility to eligible drivers.
 - Job read endpoints (for example `GET /api/get_jobs`) require a logged-in user and return 401 otherwise.
 
-## Leftovers
-`ui/static/feed.js` and `ui/static/post.js` come from the earlier dispatcher/driver version and are not used by any page. Reuse or delete them when building the planned features; do not treat them as current behavior.
-
 ## Change guidelines
 - Ignore the `keep/` folder. It holds old reference copies of code that are not part of the app: do not read, search, edit, run, test or cite it, and do not treat references found there as evidence that something is in use.
+- Before writing or changing FastAPI code (routes, dependencies, Pydantic models, WebSockets), consult the `fastapi` skill in `.agents/skills/fastapi` (installed with `uvx library-skills`; if the symlink is broken, run `uv sync` then `uvx library-skills --yes`). The rules in this file win when they conflict with the skill.
 - Prefer small, targeted changes over large rewrites.
 - Do not introduce new frameworks or packages unless necessary.
 - If you change API behavior, keep the frontend and backend aligned.

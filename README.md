@@ -46,10 +46,6 @@ Not implemented yet:
 - The driver pages and live feed, and any read endpoint for ride requests.
 - Limiting visibility to eligible drivers.
 
-Two scripts from the earlier dispatcher/driver version, `ui/static/feed.js` and
-`ui/static/post.js`, still exist but are not used by any page. They are reference
-material for the planned features.
-
 ## Requirements
 
 - Python 3.14 or newer
@@ -87,8 +83,8 @@ The token signing key is read from `config.ini` in the project root (section
 to start without it. `config.ini.example` is the committed template.
 
 Setting `development = true` under `[app]` turns on development mode
-(`app.state.development_mode`, and auto-reload when started with
-`python -m api.main`). It defaults to `false`. The 24-hour session lifetime is set
+(`app.state.development_mode`). It defaults to `false`; hot reload comes from
+`uv run fastapi dev`, not from this setting. The 24-hour session lifetime is set
 in [api/config.py](api/config.py).
 
 ## Application pages
@@ -216,7 +212,7 @@ api/
 tests/         Backend tests
 ui/
   templates/   Jinja2 page templates
-  static/      Browser JavaScript, CSS, and icons
+  static/      CSS and icons (browser JavaScript will live here)
 config.ini    Local secrets (not committed; copy from config.ini.example)
 jobhub.db      SQLite database, created on first start (not committed)
 ```

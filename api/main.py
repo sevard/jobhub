@@ -1,7 +1,6 @@
 import logging
-import uvicorn
 
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from typing import Annotated
@@ -12,13 +11,14 @@ from fastapi import (
     FastAPI,
     HTTPException,
     Request,
+    Response,
     WebSocket,
     WebSocketDisconnect,
     status,
 )
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
 from fastapi_csrf_protect.exceptions import CsrfProtectError
@@ -27,7 +27,6 @@ from fastapi_csrf_protect.flexible import CsrfProtect
 from api.config import (
     ACCESS_TOKEN_EXPIRE_SECONDS,
     AUTH_COOKIE,
-    BASE_DIR,
     CSRF_COOKIE_SAMESITE,
     CSRF_SECRET,
     CSRF_TOKEN_KEY,
@@ -63,7 +62,7 @@ logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     init_db()
     yield
 
@@ -71,9 +70,12 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Ride Request Board", lifespan=lifespan)
 app.state.development_mode = IS_DEVELOPMENT
 
+CsrfDep = Annotated[CsrfProtect, Depends()]
+AdminDep = Annotated[UserInDB, Depends(get_admin_from_cookie)]
+
 
 @CsrfProtect.load_config
-def get_csrf_config():
+def get_csrf_config() -> list[tuple[str, str]]:
     return [
         ("secret_key", CSRF_SECRET),
         ("cookie_samesite", CSRF_COOKIE_SAMESITE),
@@ -89,7 +91,9 @@ async def csrf_protect_exception_handler(
 
 
 @app.middleware("http")
-async def revalidate_cached_responses(request: Request, call_next):
+async def revalidate_cached_responses(
+    request: Request, call_next: Callable[[Request], Awaitable[Response]]
+) -> Response:
     # Without this, browsers heuristically cache static assets and /api responses
     response = await call_next(request)
     if request.url.path.startswith(("/ui/static", "/api/")):
@@ -129,7 +133,9 @@ manager = ConnectionManager()
 
 
 @app.exception_handler(RequestValidationError)
-async def validation_exception_handler(request: Request, exc: RequestValidationError):
+async def validation_exception_handler(
+    request: Request, exc: RequestValidationError
+) -> Response:
     """Re-render the signup or login form with an error instead of returning raw JSON."""
 
     body = exc.body if isinstance(exc.body, Mapping) else {}
@@ -176,7 +182,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 
 @app.get("/", include_in_schema=False)
-async def root(request: Request):
+async def root(request: Request) -> Response:
     """Landing page for visitors; logged-in users are redirected to /account."""
     try:
         await get_current_user(request.cookies.get(AUTH_COOKIE))
@@ -186,21 +192,21 @@ async def root(request: Request):
 
 
 @app.get("/api/health")
-async def health():
+async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
 @app.get("/signup", include_in_schema=False)
-async def get_signup_page(request: Request, csrf_protect: CsrfProtect = Depends()):
+async def get_signup_page(request: Request, csrf_protect: CsrfDep) -> Response:
     return _auth_page(request, csrf_protect, "signup.html")
 
 
 @app.post("/signup", include_in_schema=False)
 async def post_signup_page(
     request: Request,
-    csrf_protect: Annotated[CsrfProtect, Depends()],
+    csrf_protect: CsrfDep,
     form: Annotated[SignupFormData, Form()],
-):
+) -> Response:
     await validate_form_csrf(request, csrf_protect)
     if create_user(form.username, form.password) is None:
         return _auth_page(
@@ -216,8 +222,8 @@ async def post_signup_page(
 
 @app.get("/login", include_in_schema=False)
 async def get_login_page(
-    request: Request, csrf_protect: CsrfProtect = Depends(), created: bool = False
-):
+    request: Request, csrf_protect: CsrfDep, created: bool = False
+) -> Response:
     try:
         await get_current_user(request.cookies.get(AUTH_COOKIE))
     except HTTPException:
@@ -228,9 +234,9 @@ async def get_login_page(
 @app.post("/login", include_in_schema=False)
 async def post_login_page(
     request: Request,
-    csrf_protect: Annotated[CsrfProtect, Depends()],
+    csrf_protect: CsrfDep,
     form: Annotated[LoginFormData, Form()],
-):
+) -> Response:
     await validate_form_csrf(request, csrf_protect)
     user = authenticate_user(form.username, form.password)
     if not user:
@@ -259,7 +265,7 @@ async def post_login_page(
 
 
 @app.post("/logout", include_in_schema=False)
-async def post_logout(request: Request, csrf_protect: CsrfProtect = Depends()):
+async def post_logout(request: Request, csrf_protect: CsrfDep) -> Response:
     await validate_form_csrf(request, csrf_protect)
     response = RedirectResponse("/", status_code=status.HTTP_303_SEE_OTHER)
     response.delete_cookie(AUTH_COOKIE)
@@ -267,7 +273,7 @@ async def post_logout(request: Request, csrf_protect: CsrfProtect = Depends()):
 
 
 @app.get("/account", include_in_schema=False)
-async def get_account(request: Request, csrf_protect: CsrfProtect = Depends()):
+async def get_account(request: Request, csrf_protect: CsrfDep) -> Response:
     try:
         user = await get_current_user(request.cookies.get(AUTH_COOKIE))
     except HTTPException:
@@ -283,7 +289,7 @@ def _admin_page(
     form: dict | None = None,
     created: bool = False,
     status_code: int = 200,
-):
+) -> HTMLResponse:
     return template_response_with_csrf(
         request,
         "admin.html",
@@ -302,10 +308,10 @@ def _admin_page(
 @app.get("/admin", include_in_schema=False)
 async def get_admin_page(
     request: Request,
-    csrf_protect: Annotated[CsrfProtect, Depends()],
-    admin: Annotated[UserInDB, Depends(get_admin_from_cookie)],
+    csrf_protect: CsrfDep,
+    admin: AdminDep,
     created: bool = False,
-):
+) -> Response:
     """Admin dashboard: the ride request form and the list of ride requests."""
     return _admin_page(request, csrf_protect, admin, created=created)
 
@@ -313,10 +319,10 @@ async def get_admin_page(
 @app.post("/admin/rides", include_in_schema=False)
 async def post_ride(
     request: Request,
-    csrf_protect: Annotated[CsrfProtect, Depends()],
-    admin: Annotated[UserInDB, Depends(get_admin_from_cookie)],
+    csrf_protect: CsrfDep,
+    admin: AdminDep,
     form: Annotated[RideFormData, Form()],
-):
+) -> Response:
     await validate_form_csrf(request, csrf_protect)
     create_ride(
         form.pickup_location,
@@ -347,7 +353,7 @@ async def login_for_access_token(
 
 
 @app.websocket("/ws")
-async def websocket_relay(websocket: WebSocket,) -> None:
+async def websocket_relay(websocket: WebSocket) -> None:
     await manager.connect(websocket)
     try:
         while True:
@@ -360,20 +366,3 @@ async def websocket_relay(websocket: WebSocket,) -> None:
 
 # Mounted last so it never shadows the API/page routes defined above; serves CSS/JS assets only.
 app.mount("/ui/static", StaticFiles(directory=FRONTEND_DIR / "static"), name="static")
-
-
-def run_server(port: int = 8080) -> None:
-    uvicorn.run(
-        "api.main:app",
-        app_dir=str(BASE_DIR),
-        host="0.0.0.0",
-        port=port,
-        reload=IS_DEVELOPMENT,
-        reload_dirs=[str(BASE_DIR)],
-    )
-
-
-if __name__ == "__main__":
-    port = 8080
-    logger.info(f"Starting server on http://localhost:{port}")
-    run_server()
