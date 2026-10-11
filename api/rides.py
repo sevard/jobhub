@@ -1,8 +1,7 @@
 from datetime import datetime
 
+from psycopg import Connection
 from pydantic import BaseModel
-
-from api.db import CONNECTION
 
 
 class Ride(BaseModel):
@@ -16,6 +15,7 @@ class Ride(BaseModel):
 
 
 def create_ride(
+    connection: Connection,
     pickup_location: str,
     dropoff_location: str,
     pickup_time: datetime,
@@ -23,20 +23,20 @@ def create_ride(
     created_by: int,
 ) -> int:
     """Store a ride request, available to drivers, and return its id."""
-    cursor = CONNECTION.execute(
+    row = connection.execute(
         "INSERT INTO rides (pickup_location, dropoff_location, pickup_time, notes, created_by)"
-        " VALUES (?, ?, ?, ?, ?)",
-        (pickup_location, dropoff_location, pickup_time.isoformat(), notes, created_by),
-    )
-    CONNECTION.commit()
-    if cursor.lastrowid is None:
+        " VALUES (%s, %s, %s, %s, %s) RETURNING id",
+        (pickup_location, dropoff_location, pickup_time, notes, created_by),
+    ).fetchone()
+    connection.commit()
+    if row is None:
         raise RuntimeError("The ride request was not stored.")
-    return cursor.lastrowid
+    return row[0]
 
 
-def list_rides() -> list[Ride]:
+def list_rides(connection: Connection) -> list[Ride]:
     """All ride requests, earliest pickup first."""
-    rows = CONNECTION.execute(
+    rows = connection.execute(
         "SELECT id, pickup_location, dropoff_location, pickup_time, notes, created_by, available"
         " FROM rides ORDER BY pickup_time, id"
     ).fetchall()

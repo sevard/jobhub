@@ -11,21 +11,22 @@ from api.auth import (
     create_access_token,
     create_user,
 )
+from api.db import DbDep
 from api.config import ACCESS_TOKEN_EXPIRE_SECONDS, AUTH_COOKIE, templates
 from api.forms import (
     CsrfDep,
+    CsrfFormCheck,
     LoginFormData,
     SignupFormData,
     _auth_page,
     template_response_with_csrf,
-    validate_form_csrf,
 )
 
 router = APIRouter(include_in_schema=False)
 
 
 @router.get("/")
-async def root(request: Request, user: OptionalUserDep) -> Response:
+def root(request: Request, user: OptionalUserDep) -> Response:
     """Landing page for visitors; logged-in users are redirected to /account."""
     if user is None:
         return templates.TemplateResponse(request, "index.html")
@@ -33,18 +34,18 @@ async def root(request: Request, user: OptionalUserDep) -> Response:
 
 
 @router.get("/signup")
-async def get_signup_page(request: Request, csrf_protect: CsrfDep) -> Response:
+def get_signup_page(request: Request, csrf_protect: CsrfDep) -> Response:
     return _auth_page(request, csrf_protect, "signup.html")
 
 
-@router.post("/signup")
-async def post_signup_page(
+@router.post("/signup", dependencies=[CsrfFormCheck])
+def post_signup_page(
     request: Request,
     csrf_protect: CsrfDep,
+    connection: DbDep,
     form: Annotated[SignupFormData, Form()],
 ) -> Response:
-    await validate_form_csrf(request, csrf_protect)
-    if create_user(form.username, form.password) is None:
+    if create_user(connection, form.username, form.password) is None:
         return _auth_page(
             request,
             csrf_protect,
@@ -57,7 +58,7 @@ async def post_signup_page(
 
 
 @router.get("/login")
-async def get_login_page(
+def get_login_page(
     request: Request,
     csrf_protect: CsrfDep,
     user: OptionalUserDep,
@@ -68,14 +69,14 @@ async def get_login_page(
     return _auth_page(request, csrf_protect, "login.html", created=created)
 
 
-@router.post("/login")
-async def post_login_page(
+@router.post("/login", dependencies=[CsrfFormCheck])
+def post_login_page(
     request: Request,
     csrf_protect: CsrfDep,
+    connection: DbDep,
     form: Annotated[LoginFormData, Form()],
 ) -> Response:
-    await validate_form_csrf(request, csrf_protect)
-    user = authenticate_user(form.username, form.password)
+    user = authenticate_user(connection, form.username, form.password)
     if not user:
         return _auth_page(
             request,
@@ -101,16 +102,15 @@ async def post_login_page(
     return response
 
 
-@router.post("/logout")
-async def post_logout(request: Request, csrf_protect: CsrfDep) -> Response:
-    await validate_form_csrf(request, csrf_protect)
+@router.post("/logout", dependencies=[CsrfFormCheck])
+def post_logout() -> Response:
     response = RedirectResponse("/", status_code=status.HTTP_303_SEE_OTHER)
     response.delete_cookie(AUTH_COOKIE)
     return response
 
 
 @router.get("/account")
-async def get_account(
+def get_account(
     request: Request, csrf_protect: CsrfDep, user: UserDep
 ) -> Response:
     return template_response_with_csrf(request, "home.html", {"user": user}, csrf_protect)

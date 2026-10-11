@@ -3,13 +3,15 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Form, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi_csrf_protect.flexible import CsrfProtect
+from psycopg import Connection
 
 from api.auth import AdminDep, UserInDB, get_admin_from_cookie
+from api.db import DbDep
 from api.forms import (
     CsrfDep,
+    CsrfFormCheck,
     RideFormData,
     template_response_with_csrf,
-    validate_form_csrf,
 )
 from api.rides import create_ride, list_rides
 
@@ -23,6 +25,7 @@ router = APIRouter(
 
 def admin_page(
     request: Request,
+    connection: Connection,
     csrf_protect: CsrfProtect,
     admin: UserInDB,
     error: str = "",
@@ -35,7 +38,7 @@ def admin_page(
         "admin.html",
         {
             "user": admin,
-            "rides": list_rides(),
+            "rides": list_rides(connection),
             "error": error,
             "form": form or {},
             "created": created,
@@ -46,25 +49,25 @@ def admin_page(
 
 
 @router.get("")
-async def get_admin_page(
+def get_admin_page(
     request: Request,
     csrf_protect: CsrfDep,
+    connection: DbDep,
     admin: AdminDep,
     created: bool = False,
 ) -> Response:
     """Admin dashboard: the ride request form and the list of ride requests."""
-    return admin_page(request, csrf_protect, admin, created=created)
+    return admin_page(request, connection, csrf_protect, admin, created=created)
 
 
-@router.post("/rides")
-async def post_ride(
-    request: Request,
-    csrf_protect: CsrfDep,
+@router.post("/rides", dependencies=[CsrfFormCheck])
+def post_ride(
+    connection: DbDep,
     admin: AdminDep,
     form: Annotated[RideFormData, Form()],
 ) -> Response:
-    await validate_form_csrf(request, csrf_protect)
     create_ride(
+        connection,
         form.pickup_location,
         form.dropoff_location,
         form.pickup_time,

@@ -6,6 +6,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 
 from api.auth import Token, authenticate_user, create_access_token
 from api.config import ACCESS_TOKEN_EXPIRE_SECONDS
+from api.db import DbDep
 
 api_router = APIRouter(prefix="/api", tags=["health"])
 token_router = APIRouter(tags=["auth"])
@@ -17,10 +18,11 @@ async def health() -> dict[str, str]:
 
 
 @token_router.post("/token")
-async def login_for_access_token(
+def login_for_access_token(
     form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
+    connection: DbDep,
 ) -> Token:
-    user = authenticate_user(form_data.username, form_data.password)
+    user = authenticate_user(connection, form_data.username, form_data.password)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

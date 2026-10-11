@@ -1,10 +1,10 @@
 # JobHub
 
-JobHub is a lightweight ride-request board built for **drivers**. An admin
+JobHub is a ride-request board built for **drivers**. An admin
 publishes a ride request manually, and every eligible driver sees it in real
 time, without refreshing the browser. Drivers can take a ride request and
-cancel it if an emergency comes up. The FastAPI backend stores data in (for
-now) SQLite and is designed to broadcast updates to connected browsers over
+cancel it if an emergency comes up. The FastAPI backend stores data in
+PostgreSQL and is designed to broadcast updates to connected browsers over
 WebSockets.
 
 > **Status: early development.** Account handling (sign-up, login, logout) is
@@ -58,7 +58,9 @@ config and start the server:
 
 ```bash
 uv sync
-cp config.ini.example config.ini   # then set a real secret_key in config.ini
+cp config.ini.example config.ini   # set secret_key and the user and password in the [database] URLs
+cp .env.example .env               # set POSTGRES_USER and POSTGRES_PASSWORD (same as in config.ini; optionally `POSTGRES_PORT`, default 5432, which must match the port in the config.ini URLs)
+docker compose up -d --wait         # PostgreSQL on 127.0.0.1:5432
 uv run fastapi run --port 8080
 ```
 
@@ -82,10 +84,14 @@ The token signing key is read from `config.ini` in the project root (section
 `[auth]`, option `secret_key`). `config.ini` is git-ignored, and the app refuses
 to start without it. `config.ini.example` is the committed template.
 
-Setting `development = true` under `[app]` turns on development mode
-(`app.state.development_mode`). It defaults to `false`; hot reload comes from
-`uv run fastapi dev`, not from this setting. The 24-hour session lifetime is set
-in [api/config.py](api/config.py).
+The PostgreSQL connection URL comes from the `DATABASE_URL` environment variable,
+or `[database] url` in `config.ini`; there is no built-in default, so the password
+is never in source code. The container's user and password are `POSTGRES_USER` and `POSTGRES_PASSWORD` in the
+git-ignored `.env` (template: `.env.example`). Change the user or password in `config.ini`
+and `.env` together; an existing database volume keeps its old user and password until you
+recreate it (`docker compose down -v`).
+
+The 24-hour session lifetime is set in [api/config.py](api/config.py).
 
 ## Application pages
 
@@ -122,8 +128,8 @@ Every account is either a `driver` or an `admin`.
 - **Admins are created from the command line**, never through the website:
 
   ```bash
-  uv run python -m api.create_admin USERNAME            # new admin, prompts for the password
-  uv run python -m api.create_admin USERNAME --promote  # make an existing user an admin
+  uv run python -m utils.create_admin USERNAME            # new admin, prompts for the password
+  uv run python -m utils.create_admin USERNAME --promote  # make an existing user an admin
   ```
 
   The password is typed at a hidden prompt, not given as an argument, and
@@ -136,8 +142,9 @@ Every account is either a `driver` or an `admin`.
 - `get_current_admin` and `get_current_driver` in [api/auth.py](api/auth.py)
   return 403 for the wrong role; they are ready for the admin and driver
   features.
-- The `users` table has no migrations. After this change, delete an old
-  `jobhub.db` so it is recreated with the `role` column.
+- The tables have no migrations: `init_db()` only creates missing tables. After
+  a schema change, recreate the database (`docker compose down -v`, then
+  `docker compose up -d --wait`).
 
 ## Ride requests
 
@@ -196,7 +203,9 @@ and `/api/health`.
 `tests/test_rides.py` covers ride request storage and the admin dashboard: access
 control, creating a ride, validation and CSRF.
 
-Both run against an in-memory database.
+Both run against the PostgreSQL `jobhub_test` database (start it with
+`docker compose up -d --wait`; set `[database] test_url` in `config.ini` or `TEST_DATABASE_URL`). The tests
+truncate its tables, never the development database.
 
 ## Project layout
 
@@ -208,15 +217,17 @@ api/
   endpoints.py Health check and token endpoint
   ws.py        WebSocket endpoint and ConnectionManager
   auth.py      Password hashing, JWT tokens, user lookup and creation, role checks
-  create_admin.py  Command-line tool to create or promote an admin
   rides.py     Ride request storage (create and list)
   config.py    Shared settings: paths, templates, cookie, token and CSRF values
-  db.py        SQLite connection and users and rides table setup
+  db.py        PostgreSQL connection pool, per-request connection dependency, table setup
   forms.py     Sign-up, log-in and ride request form models, CSRF form helpers, and the signup/login page helper
+utils/
+  create_admin.py  Command-line tool to create or promote an admin
 tests/         Backend tests
 ui/
   templates/   Jinja2 page templates
   static/      CSS and icons (browser JavaScript will live here)
 config.ini    Local secrets (not committed; copy from config.ini.example)
-jobhub.db      SQLite database, created on first start (not committed)
+compose.yaml   PostgreSQL service for local development and tests
+db/            SQL run when the PostgreSQL container is first created
 ```

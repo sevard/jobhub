@@ -18,9 +18,10 @@ Code layout:
 - `api/endpoints.py`: `GET /api/health` (router prefix `/api`) and `POST /token`
 - `api/ws.py`: `ConnectionManager`, the shared `manager`, and the `/ws` route
 - `api/auth.py`: password hashing (Argon2 via pwdlib), JWT tokens, user lookup and creation, current-user dependencies
-- `api/create_admin.py`: command-line tool to create an admin or `--promote` an existing user after a y/N confirmation, which `--yes` skips (`uv run python -m api.create_admin USERNAME`)
-- `api/config.py`: shared settings: `BASE_DIR`, `FRONTEND_DIR`, the single `Jinja2Templates` object (import `templates` from here; do not create another), `IS_DEVELOPMENT` (from `[app] development` in `config.ini`), the auth cookie name, token lifetime, JWT `SECRET_KEY` (read from the git-ignored `config.ini`; see `config.ini.example`) and `ALGORITHM`, and the CSRF values. Put new settings and constants here, not in `main.py`
-- `api/db.py`: SQLite connection (`jobhub.db`) and the `users` and `rides` tables
+- `utils/create_admin.py`: command-line tool to create an admin or `--promote` an existing user after a y/N confirmation, which `--yes` skips (`uv run python -m utils.create_admin USERNAME`)
+- `api/config.py`: shared settings: `BASE_DIR`, `FRONTEND_DIR`, the single `Jinja2Templates` object (import `templates` from here; do not create another), the auth cookie name, token lifetime, JWT `SECRET_KEY` (read from the git-ignored `config.ini`; see `config.ini.example`) and `ALGORITHM`, and the CSRF values. Put new settings and constants here, not in `main.py`
+- `api/db.py`: PostgreSQL connection pool (`psycopg_pool`), the `DbDep` per-request connection dependency, and `init_db()` which creates the `users` and `rides` tables. The URL (with the password) comes from `DATABASE_URL` or `[database] url` in the git-ignored `config.ini`; there is no default in code. The tests read `[database] test_url` or `TEST_DATABASE_URL`. `compose.yaml` takes the container user and password from the git-ignored `.env` (`.env.example` is the template; `POSTGRES_PORT` sets the host port, default 5432, and must match the port in the `config.ini` URLs). Never put the database user or password in committed files
+- `compose.yaml` and `db/`: PostgreSQL 17 for development (database `jobhub`) and tests (database `jobhub_test`)
 - `api/rides.py`: ride request storage (`create_ride`, `list_rides`)
 - `api/forms.py`: Pydantic models for the signup, login and ride request forms, plus the CSRF form helpers and the signup and login page renderer (the CSRF registration, `CsrfProtect.load_config` and its error handler, lives in `api/main.py`, with its values in `api/config.py`), and the `CsrfDep` type alias
 - `ui/templates/` and `ui/static/`: Jinja2 templates, CSS, JS and icons
@@ -30,18 +31,19 @@ Code layout:
 - Use Python 3.14+ as declared in pyproject.toml.
 - Always use uv for Python package management and project commands.
 - Backend entrypoint: `api.main:app` (declared under `[tool.fastapi]` in pyproject.toml).
-- Before the first run, copy `config.ini.example` to `config.ini` and set `secret_key`. Never commit `config.ini` or put secrets in source code.
+- Before the first run, copy `config.ini.example` to `config.ini` (set `secret_key` and the database user and password) and `.env.example` to `.env` (same user and password). Never commit `config.ini` or put secrets in source code.
+- Start PostgreSQL first with `docker compose up -d --wait`.
 - Start the app with `uv run fastapi run --port 8080`. In development use hot reload: `uv run fastapi dev --port 8080`.
 - Then open http://127.0.0.1:8080/ (landing page), http://127.0.0.1:8080/signup, http://127.0.0.1:8080/login or http://127.0.0.1:8080/account.
 
 ## Architecture guidance
-- Keep the backend a lightweight FastAPI app that stores data in SQLite.
+- Keep the backend a lightweight FastAPI app that stores data in PostgreSQL.
 - Current routes:
   - Pages: `GET /`, `GET|POST /signup`, `GET|POST /login`, `POST /logout`, `GET /account`, `GET /admin` (admins only), `POST /admin/rides` (admins only; creates a ride request)
   - API: `GET /api/health`, `POST /token`, `WS /ws`
 - Accounts: usernames are 3-32 letters, digits or `_` (case-insensitive, unique); passwords are 8-128 characters hashed with Argon2 in the `users` table. A login sets the HttpOnly, `SameSite=Lax` `auth_token` cookie holding a JWT that lasts 24 hours (`ACCESS_TOKEN_EXPIRE_SECONDS` in `api/config.py`). There are no `/api` signup routes.
-- Roles: `users.role` is `admin` or `driver` (default `driver`). Sign-up must only ever create drivers: never read a role from a request or add a role field to the signup form. Admins are created only with `api/create_admin.py`. Roles are read from the database, not from the JWT. Guard role-specific routes with `get_current_admin` or `get_current_driver` (403 for the wrong role). There are no migrations: delete an old `jobhub.db` after schema changes.
-- Ride requests live in the `rides` table (pickup location, drop-off location, `pickup_time` as an ISO string without a time zone, notes, `available` boolean (default true; a ride a driver can still take, never set from the form), `created_by` user id). They are created only through the admin HTML form with CSRF and never through a JSON route. The admin router applies the `get_admin_from_cookie` dependency (`AdminDep` in `api/auth.py`; 303 to `/login` when logged out, 403 for non-admins) to every route; it runs before form validation, so unauthenticated invalid posts are redirected, not echoed. The `RequestValidationError` handler also re-renders the dashboard for `POST /admin/rides`.
+- Roles: `users.role` is `admin` or `driver` (default `driver`). Sign-up must only ever create drivers: never read a role from a request or add a role field to the signup form. Admins are created only with `utils/create_admin.py`. Roles are read from the database, not from the JWT. Guard role-specific routes with `get_current_admin` or `get_current_driver` (403 for the wrong role). There are no migrations: `init_db()` only creates missing tables, so recreate the database after schema changes (`docker compose down -v` then `docker compose up -d --wait`).
+- Ride requests live in the `rides` table (pickup location, drop-off location, `pickup_time` as a `TIMESTAMP` without a time zone, notes, `available` boolean (default true; a ride a driver can still take, never set from the form), `created_by` user id). They are created only through the admin HTML form with CSRF and never through a JSON route. The admin router applies the `get_admin_from_cookie` dependency (`AdminDep` in `api/auth.py`; 303 to `/login` when logged out, 403 for non-admins) to every route; it runs before form validation, so unauthenticated invalid posts are redirected, not echoed. The `RequestValidationError` handler also re-renders the dashboard for `POST /admin/rides`.
 - Disabled users (`users.disabled`) may still log in and use `/account`. The pages read the cookie user (see below); use `get_current_active_user` only where a feature must block disabled users.
 - Forms: every form carries a hidden `csrf_token` field validated with `validate_form_csrf`. Form routes take a Pydantic model via `Annotated[Model, Form()]` (models live in `api/forms.py`). Validation failures on `/signup` and `/login` are turned into re-rendered pages by the `RequestValidationError` handler in `api/main.py`; login failures always show the same generic message. Add new form routes the same way.
 - Pages read the logged-in user from the `auth_token` cookie with dependencies in `api/auth.py`: `OptionalUserDep` (the user or `None`, for `/` and `/login`) and `UserDep` (303 to `/login` when logged out, for `/account`). Logged-in requests to `/` and `/login` are redirected to `/account`. Do not call `get_current_user` by hand or wrap it in `try/except`; the bearer-token `get_current_user` is for API routes.
@@ -66,7 +68,7 @@ Code layout:
 - Keep the README.md and this file in sync with behavior changes.
 
 ## Validation expectations
-- Run the tests with `uv run python -m unittest discover -s tests -q`. They use an in-memory database.
+- Run the tests with `uv run python -m unittest discover -s tests -q`. They need the PostgreSQL container (`docker compose up -d --wait`) and use its `jobhub_test` database (truncated on every test).
 - Verify backend changes by starting the app and checking `GET /api/health`.
 - Verify UI changes by opening http://127.0.0.1:8080/, `/signup`, `/login` and `/account` after starting the backend.
 - After confirming the backend or frontend works, shut the local server down before finishing.

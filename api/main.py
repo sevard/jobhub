@@ -4,6 +4,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Response, status
+from fastapi.concurrency import run_in_threadpool
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -15,17 +16,17 @@ from api import admin, endpoints, pages, ws
 from api.admin import admin_page
 from api.auth import (
     get_admin_from_cookie,
-    get_optional_user_from_cookie,
     get_user_from_cookie,
+    get_user_from_token,
 )
 from api.config import (
+    AUTH_COOKIE,
     CSRF_COOKIE_SAMESITE,
     CSRF_SECRET,
     CSRF_TOKEN_KEY,
     FRONTEND_DIR,
-    IS_DEVELOPMENT,
 )
-from api.db import init_db
+from api.db import init_db, pool
 from api.forms import RIDE_LOCATION_MAX_LENGTH, RIDE_NOTES_MAX_LENGTH, _auth_page
 
 
@@ -34,12 +35,15 @@ logging.basicConfig(level=logging.INFO)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
-    init_db()
-    yield
+    pool.open(wait=True, timeout=10)
+    try:
+        init_db()
+        yield
+    finally:
+        pool.close()
 
 
 app = FastAPI(title="Ride Request Board", lifespan=lifespan)
-app.state.development_mode = IS_DEVELOPMENT
 
 
 @CsrfProtect.load_config
@@ -69,6 +73,32 @@ async def revalidate_cached_responses(
     return response
 
 
+def _admin_form_error_page(request: Request, body: Mapping) -> Response:
+    """Re-render the dashboard for an invalid ride form (blocking, so run it in a thread)."""
+    with pool.connection() as connection:
+        # The admin check ran before validation, so this only fails if the session just ended
+        user = get_user_from_token(connection, request.cookies.get(AUTH_COOKIE))
+        admin = get_admin_from_cookie(get_user_from_cookie(user))
+        return admin_page(
+            request,
+            connection,
+            CsrfProtect(),
+            admin,
+            error=(
+                "Enter a pickup and drop-off location (up to "
+                f"{RIDE_LOCATION_MAX_LENGTH} characters), a valid pickup date and time, "
+                f"and notes of up to {RIDE_NOTES_MAX_LENGTH} characters."
+            ),
+            form={
+                "pickup_location": str(body.get("pickup_location", ""))[:RIDE_LOCATION_MAX_LENGTH],
+                "dropoff_location": str(body.get("dropoff_location", ""))[:RIDE_LOCATION_MAX_LENGTH],
+                "pickup_time": str(body.get("pickup_time", ""))[:32],
+                "notes": str(body.get("notes", ""))[:RIDE_NOTES_MAX_LENGTH],
+            },
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        )
+
+
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(
     request: Request, exc: RequestValidationError
@@ -96,26 +126,7 @@ async def validation_exception_handler(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
     if request.method == "POST" and request.url.path == "/admin/rides":
-        # The admin check ran before validation, so this only fails if the session just ended
-        user = await get_optional_user_from_cookie(request)
-        admin = await get_admin_from_cookie(await get_user_from_cookie(user))
-        return admin_page(
-            request,
-            CsrfProtect(),
-            admin,
-            error=(
-                "Enter a pickup and drop-off location (up to "
-                f"{RIDE_LOCATION_MAX_LENGTH} characters), a valid pickup date and time, "
-                f"and notes of up to {RIDE_NOTES_MAX_LENGTH} characters."
-            ),
-            form={
-                "pickup_location": str(body.get("pickup_location", ""))[:RIDE_LOCATION_MAX_LENGTH],
-                "dropoff_location": str(body.get("dropoff_location", ""))[:RIDE_LOCATION_MAX_LENGTH],
-                "pickup_time": str(body.get("pickup_time", ""))[:32],
-                "notes": str(body.get("notes", ""))[:RIDE_NOTES_MAX_LENGTH],
-            },
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-        )
+        return await run_in_threadpool(_admin_form_error_page, request, body)
     return await request_validation_exception_handler(request, exc)
 
 

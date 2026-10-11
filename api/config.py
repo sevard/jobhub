@@ -23,7 +23,12 @@ def _load_config() -> configparser.ConfigParser:
 
 _config = _load_config()
 
-IS_DEVELOPMENT = _config.getboolean("app", "development", fallback=False)
+# The URL holds the database password, so it is never in source code
+DATABASE_URL = os.getenv("DATABASE_URL") or _config.get("database", "url", fallback="")
+if not DATABASE_URL:
+    raise RuntimeError(
+        f"Set [database] url in {CONFIG_PATH} (see config.ini.example) or the DATABASE_URL variable."
+    )
 
 AUTH_COOKIE = "auth_token"
 ACCESS_TOKEN_EXPIRE_SECONDS = 60 * 60 * 24  # 24 hours

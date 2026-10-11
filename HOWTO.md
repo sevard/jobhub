@@ -2,9 +2,10 @@
 
 ## Running server
 
-Start the server from the project root with:
+Start PostgreSQL and then the server from the project root with:
 
 ```bash
+docker compose up -d --wait
 uv run fastapi run --port 8080
 ```
 
@@ -18,7 +19,8 @@ Before the first run, make sure `config.ini` exists in the project root (the
 tests import the app, which refuses to start without it):
 
 ```bash
-cp config.ini.example config.ini
+cp config.ini.example config.ini   # set the user and password in the [database] URLs
+cp .env.example .env               # set POSTGRES_USER and POSTGRES_PASSWORD to the same values
 ```
 
 Run the whole suite from the project root with:
@@ -39,4 +41,4 @@ uv run python -m unittest tests.test_auth.LoginRouteTests
 uv run python -m unittest tests.test_auth.LoginRouteTests.test_disabled_user_can_still_log_in
 ```
 
-The tests use an in-memory SQLite database, so they never read or change the data in `jobhub.db`.
+The tests need PostgreSQL (`docker compose up -d --wait`) and use the separate `jobhub_test` database, so they never read or change the development data. Set `[database] test_url` in `config.ini` (or `TEST_DATABASE_URL`) to use another server; its database name must end in `_test`.

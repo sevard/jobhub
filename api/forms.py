@@ -55,16 +55,20 @@ def template_response_with_csrf(
     return response
 
 
-async def validate_form_csrf(request: Request, csrf_protect: CsrfProtect) -> dict:
-    """Validate the csrf_token hidden field of a server-rendered form and return the fields."""
+async def validate_form_csrf(request: Request, csrf_protect: CsrfDep) -> None:
+    """Dependency for POST form routes: validate the csrf_token hidden field.
 
-    form = dict(await request.form())
+    It is async because the library awaits the request body; the route handlers
+    that use it can stay plain `def`. It runs before the form model is validated.
+    """
 
     # Per-request instance; the library declares _token_location as a ClassVar,
     # so setattr (instance attribute) avoids the type error without changing the class
     setattr(csrf_protect, "_token_location", "body")
     await csrf_protect.validate_csrf(request)
-    return form
+
+
+CsrfFormCheck = Depends(validate_form_csrf)
 
 
 def _echoed_username(value: object) -> str:

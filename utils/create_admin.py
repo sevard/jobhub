@@ -1,15 +1,16 @@
 """Create an admin account, or promote an existing user to admin.
 
-Usage: uv run python -m api.create_admin USERNAME [--promote [--yes]]
+Usage: uv run python -m utils.create_admin USERNAME [--promote [--yes]]
 """
 import argparse
 import getpass
 import sys
 
+from psycopg import Connection
 from pydantic import ValidationError
 
 from api.auth import _get_user_by_username, create_user, set_user_role
-from api.db import init_db
+from api.db import init_db, pool
 from api.forms import SignupFormData
 
 
@@ -45,8 +46,20 @@ def main(
     )
     args = parser.parse_args(argv)
 
-    init_db()
-    existing = _get_user_by_username(args.username)
+    opened_here = pool.closed
+    if opened_here:
+        pool.open(wait=True, timeout=10)
+    try:
+        init_db()
+        with pool.connection() as connection:
+            return _run(args, connection, prompt, ask)
+    finally:
+        if opened_here:
+            pool.close()
+
+
+def _run(args: argparse.Namespace, connection: Connection, prompt, ask) -> int:
+    existing = _get_user_by_username(connection, args.username)
 
     if args.promote:
         if existing is None:
@@ -59,7 +72,7 @@ def main(
         if not args.yes and not _confirmed(question, ask):
             print("Cancelled. No changes made.", file=sys.stderr)
             return 1
-        set_user_role(existing.username, "admin")
+        set_user_role(connection, existing.username, "admin")
         print(f"User '{existing.username}' is now an admin.")
         return 0
 
@@ -80,7 +93,7 @@ def main(
         print(message, file=sys.stderr)
         return 1
 
-    if create_user(form.username, form.password, role="admin") is None:
+    if create_user(connection, form.username, form.password, role="admin") is None:
         print(f"User '{form.username}' already exists.", file=sys.stderr)
         return 1
     print(f"Admin '{form.username}' created.")

@@ -1,4 +1,3 @@
-import sqlite3
 import sys
 import unittest
 from datetime import datetime
@@ -8,6 +7,8 @@ BASE = Path(__file__).resolve().parents[1]
 if str(BASE) not in sys.path:
     sys.path.insert(0, str(BASE))
 
+import tests.testdb  # noqa: E402,F401  (must come before any api import)
+import psycopg  # noqa: E402
 import api.auth as auth  # noqa: E402
 import api.rides as rides  # noqa: E402
 import tests.test_auth as base  # noqa: E402
@@ -21,8 +22,8 @@ VALID_RIDE = {
 }
 
 
-def user_id(username):
-    user = auth._get_user_by_username(username)
+def user_id(connection, username):
+    user = auth._get_user_by_username(connection, username)
     assert user is not None, f"No user named {username!r}"
     return user.id
 
@@ -30,8 +31,8 @@ def user_id(username):
 class RideStorageTests(base.DatabaseTestCase):
     def setUp(self):
         super().setUp()
-        auth.create_user("boss", PASSWORD, role="admin")
-        self.admin_id = user_id("boss")
+        auth.create_user(self.connection, "boss", PASSWORD, role="admin")
+        self.admin_id = user_id(self.connection, "boss")
 
     def create(self, **overrides):
         values = {
@@ -42,7 +43,7 @@ class RideStorageTests(base.DatabaseTestCase):
             "created_by": self.admin_id,
             **overrides,
         }
-        return rides.create_ride(**values)
+        return rides.create_ride(self.connection, **values)
 
     def test_create_ride_returns_id_and_stores_all_fields(self):
         ride_id = self.create(
@@ -52,7 +53,7 @@ class RideStorageTests(base.DatabaseTestCase):
             notes="One bag",
         )
 
-        [ride] = rides.list_rides()
+        [ride] = rides.list_rides(self.connection)
         self.assertEqual(ride.id, ride_id)
         self.assertEqual(ride.pickup_location, "Airport")
         self.assertEqual(ride.dropoff_location, "Hotel")
@@ -63,15 +64,15 @@ class RideStorageTests(base.DatabaseTestCase):
     def test_new_rides_are_available(self):
         self.create()
 
-        self.assertTrue(rides.list_rides()[0].available)
+        self.assertTrue(rides.list_rides(self.connection)[0].available)
 
     def test_availability_is_stored_as_a_real_boolean_column(self):
         self.create()
 
-        self.assertEqual(
-            self.connection.execute("SELECT available FROM rides").fetchone()[0], 1)
+        self.assertIs(
+            self.connection.execute("SELECT available FROM rides").fetchone()[0], True)
         self.connection.execute("UPDATE rides SET available = FALSE")
-        self.assertFalse(rides.list_rides()[0].available)
+        self.assertFalse(rides.list_rides(self.connection)[0].available)
 
     def test_rides_are_listed_by_pickup_time(self):
         self.create(pickup_location="late", pickup_time=datetime(2030, 3, 1, 9, 0))
@@ -79,23 +80,22 @@ class RideStorageTests(base.DatabaseTestCase):
         self.create(pickup_location="middle", pickup_time=datetime(2030, 2, 1, 9, 0))
 
         self.assertEqual(
-            [ride.pickup_location for ride in rides.list_rides()],
+            [ride.pickup_location for ride in rides.list_rides(self.connection)],
             ["early", "middle", "late"],
         )
 
     def test_no_rides_gives_an_empty_list(self):
-        self.assertEqual(rides.list_rides(), [])
+        self.assertEqual(rides.list_rides(self.connection), [])
 
     def test_ride_must_belong_to_an_existing_user(self):
-        self.connection.execute("PRAGMA foreign_keys = ON")
-
-        with self.assertRaises(sqlite3.IntegrityError):
+        with self.assertRaises(psycopg.errors.ForeignKeyViolation):
             self.create(created_by=9999)
+        self.connection.rollback()
 
 
 class AdminWebTestCase(base.WebTestCase):
     def login_as(self, username, role):
-        auth.create_user(username, PASSWORD, role=role)
+        auth.create_user(self.connection, username, PASSWORD, role=role)
         response = self.login(username)
         self.assertEqual(response.status_code, 303)
 
@@ -103,7 +103,7 @@ class AdminWebTestCase(base.WebTestCase):
         self.login_as("boss", "admin")
 
     def stored_rides(self):
-        return rides.list_rides()
+        return rides.list_rides(self.connection)
 
     def create_ride(self, **overrides):
         return self.post_form("/admin/rides", page="/admin", **{**VALID_RIDE, **overrides})
@@ -197,7 +197,7 @@ class CreateRideTests(AdminWebTestCase):
         self.create_ride()
 
         [ride] = self.stored_rides()
-        self.assertEqual(ride.created_by, user_id("boss"))
+        self.assertEqual(ride.created_by, user_id(self.connection, "boss"))
 
     def test_new_ride_is_available_and_shown_as_available(self):
         self.create_ride()

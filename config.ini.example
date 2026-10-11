@@ -3,6 +3,9 @@
 #   python -c "import secrets; print(secrets.token_hex(32))"
 secret_key = change-me
 
-[app]
-# true enables development mode (app.state.development_mode); use `fastapi dev` for hot reload
-development = false
+[database]
+# PostgreSQL connection URLs; replace POSTGRES_USER and POSTGRES_PASSWORD with the values from .env.
+# The DATABASE_URL and TEST_DATABASE_URL environment variables override them.
+url = postgresql://POSTGRES_USER:POSTGRES_PASSWORD@127.0.0.1:5432/jobhub
+# Used by the tests, which truncate its tables; the name must end in _test
+test_url = postgresql://POSTGRES_USER:POSTGRES_PASSWORD@127.0.0.1:5432/jobhub_test

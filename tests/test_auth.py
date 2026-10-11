@@ -1,7 +1,6 @@
-import asyncio
+import atexit
 import io
 import re
-import sqlite3
 import sys
 import unittest
 import warnings
@@ -14,13 +13,14 @@ BASE = Path(__file__).resolve().parents[1]
 if str(BASE) not in sys.path:
     sys.path.insert(0, str(BASE))
 
+import tests.testdb  # noqa: E402,F401  (must come before any api import)
 import api.auth as auth  # noqa: E402
-import api.create_admin as create_admin  # noqa: E402
+import utils.create_admin as create_admin  # noqa: E402
 import api.db as db  # noqa: E402
-import api.rides as rides  # noqa: E402
 from api.forms import LoginFormData, SignupFormData  # noqa: E402
 
 warnings.filterwarnings("ignore", message=".*httpx.*")
+import psycopg  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from pydantic import ValidationError  # noqa: E402
@@ -32,28 +32,31 @@ PASSWORD = "correct-horse"
 CSRF_FIELD = re.compile(r'name="csrf_token" value="([^"]+)"')
 
 
+atexit.register(db.pool.close)
+
+
 class DatabaseTestCase(unittest.TestCase):
-    """Runs each test against a fresh in-memory users database."""
+    """Runs each test against empty tables in the PostgreSQL test database."""
+
+    @classmethod
+    def setUpClass(cls):
+        db.pool.open(wait=True, timeout=10)
 
     def setUp(self):
-        self.connection = sqlite3.connect(":memory:", check_same_thread=False)
-        # these modules import CONNECTION by name, so each must be patched
-        for module in (db, auth, rides):
-            patcher = patch.object(module, "CONNECTION", self.connection)
-            patcher.start()
-            self.addCleanup(patcher.stop)
-        self.addCleanup(self.connection.close)
         db.init_db()
+        with db.pool.connection() as connection:
+            connection.execute("TRUNCATE rides, users RESTART IDENTITY")
+        self.connection = self.enterContext(db.pool.connection())
 
     def stored_user(self, username):
         return self.connection.execute(
-            "SELECT username, password_hash, disabled FROM users WHERE username = ?",
+            "SELECT username, password_hash, disabled FROM users WHERE lower(username) = lower(%s)",
             (username,),
         ).fetchone()
 
     def disable(self, username):
         self.connection.execute(
-            "UPDATE users SET disabled = TRUE WHERE username = ?", (username,))
+            "UPDATE users SET disabled = TRUE WHERE username = %s", (username,))
         self.connection.commit()
 
 
@@ -100,69 +103,69 @@ class FormModelTests(unittest.TestCase):
 
 class UserStorageTests(DatabaseTestCase):
     def test_create_user_returns_id_and_stores_hash_not_password(self):
-        user_id = auth.create_user("alice", PASSWORD)
+        user_id = auth.create_user(self.connection, "alice", PASSWORD)
 
         self.assertIsInstance(user_id, int)
         username, password_hash, disabled = self.stored_user("alice")
         self.assertEqual(username, "alice")
         self.assertNotIn(PASSWORD, password_hash)
         self.assertTrue(auth.verify_password(PASSWORD, password_hash))
-        self.assertEqual(disabled, 0)
+        self.assertFalse(disabled)
 
     def test_duplicate_username_returns_none(self):
-        auth.create_user("alice", PASSWORD)
+        auth.create_user(self.connection, "alice", PASSWORD)
 
-        self.assertIsNone(auth.create_user("alice", "another-password"))
+        self.assertIsNone(auth.create_user(self.connection, "alice", "another-password"))
 
     def test_duplicate_username_is_case_insensitive(self):
-        auth.create_user("alice", PASSWORD)
+        auth.create_user(self.connection, "alice", PASSWORD)
 
-        self.assertIsNone(auth.create_user("ALICE", "another-password"))
+        self.assertIsNone(auth.create_user(self.connection, "ALICE", "another-password"))
         count = self.connection.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         self.assertEqual(count, 1)
 
     def test_create_user_with_empty_password_raises(self):
         with self.assertRaises(ValueError):
-            auth.create_user("alice", "")
+            auth.create_user(self.connection, "alice", "")
 
     def test_lookup_returns_user_or_none(self):
-        auth.create_user("alice", PASSWORD)
+        auth.create_user(self.connection, "alice", PASSWORD)
 
-        user = auth._get_user_by_username("alice")
+        user = auth._get_user_by_username(self.connection, "alice")
         self.assertEqual(user.username, "alice")
         self.assertFalse(user.disabled)
-        self.assertIsNone(auth._get_user_by_username("nobody"))
+        self.assertIsNone(auth._get_user_by_username(self.connection, "nobody"))
 
 
 class AuthenticateUserTests(DatabaseTestCase):
     def setUp(self):
         super().setUp()
-        auth.create_user("alice", PASSWORD)
+        auth.create_user(self.connection, "alice", PASSWORD)
 
     def test_correct_credentials_return_the_user(self):
-        user = auth.authenticate_user("alice", PASSWORD)
+        user = auth.authenticate_user(self.connection, "alice", PASSWORD)
 
         self.assertEqual(user.username, "alice")
 
     def test_username_match_ignores_case(self):
-        self.assertTrue(auth.authenticate_user("ALICE", PASSWORD))
+        self.assertTrue(auth.authenticate_user(self.connection, "ALICE", PASSWORD))
 
     def test_wrong_password_returns_false(self):
-        self.assertFalse(auth.authenticate_user("alice", "wrong-password"))
+        self.assertFalse(auth.authenticate_user(self.connection, "alice", "wrong-password"))
 
     def test_unknown_user_returns_false(self):
-        self.assertFalse(auth.authenticate_user("nobody", PASSWORD))
+        self.assertFalse(auth.authenticate_user(self.connection, "nobody", PASSWORD))
 
     def test_unknown_user_still_runs_a_password_check(self):
         with patch.object(auth, "verify_password", return_value=False) as verify:
-            auth.authenticate_user("nobody", PASSWORD)
+            auth.authenticate_user(self.connection, "nobody", PASSWORD)
 
         verify.assert_called_once_with(PASSWORD, auth.DUMMY_HASH)
 
     def test_disabled_user_still_authenticates(self):
         self.disable("alice")
 
-        user = auth.authenticate_user("alice", PASSWORD)
+        user = auth.authenticate_user(self.connection, "alice", PASSWORD)
 
         self.assertTrue(user.disabled)
 
@@ -170,37 +173,37 @@ class AuthenticateUserTests(DatabaseTestCase):
 class TokenTests(DatabaseTestCase):
     def setUp(self):
         super().setUp()
-        auth.create_user("alice", PASSWORD)
+        auth.create_user(self.connection, "alice", PASSWORD)
 
     def test_token_round_trips_to_the_user(self):
         token = auth.create_access_token({"sub": "alice"})
 
-        self.assertEqual(auth.get_user_from_token(token).username, "alice")
+        self.assertEqual(auth.get_user_from_token(self.connection, token).username, "alice")
 
     def test_missing_or_garbage_token_gives_none(self):
         for token in (None, "", "not-a-jwt"):
             with self.subTest(token=token):
-                self.assertIsNone(auth.get_user_from_token(token))
+                self.assertIsNone(auth.get_user_from_token(self.connection, token))
 
     def test_expired_token_gives_none(self):
         token = auth.create_access_token(
             {"sub": "alice"}, expires_delta=timedelta(minutes=-1))
 
-        self.assertIsNone(auth.get_user_from_token(token))
+        self.assertIsNone(auth.get_user_from_token(self.connection, token))
 
     def test_token_signed_with_another_key_gives_none(self):
         with patch.object(auth, "SECRET_KEY", "some-other-secret-key-0123456789abcdef"):
             token = auth.create_access_token({"sub": "alice"})
 
-        self.assertIsNone(auth.get_user_from_token(token))
+        self.assertIsNone(auth.get_user_from_token(self.connection, token))
 
     def test_token_without_subject_gives_none(self):
-        self.assertIsNone(auth.get_user_from_token(auth.create_access_token({})))
+        self.assertIsNone(auth.get_user_from_token(self.connection, auth.create_access_token({})))
 
     def test_token_for_deleted_user_gives_none(self):
         token = auth.create_access_token({"sub": "ghost"})
 
-        self.assertIsNone(auth.get_user_from_token(token))
+        self.assertIsNone(auth.get_user_from_token(self.connection, token))
 
     def test_default_expiry_is_fifteen_minutes(self):
         token = auth.create_access_token({"sub": "alice"})
@@ -213,12 +216,12 @@ class TokenTests(DatabaseTestCase):
 class CurrentUserDependencyTests(DatabaseTestCase):
     def setUp(self):
         super().setUp()
-        auth.create_user("alice", PASSWORD)
+        auth.create_user(self.connection, "alice", PASSWORD)
 
     def test_get_current_user_returns_user_for_valid_token(self):
         token = auth.create_access_token({"sub": "alice"})
 
-        user = asyncio.run(auth.get_current_user(token))
+        user = auth.get_current_user(token, self.connection)
 
         self.assertEqual(user.username, "alice")
 
@@ -226,81 +229,82 @@ class CurrentUserDependencyTests(DatabaseTestCase):
         for token in (None, "bad-token"):
             with self.subTest(token=token):
                 with self.assertRaises(HTTPException) as caught:
-                    asyncio.run(auth.get_current_user(token))
+                    auth.get_current_user(token, self.connection)
                 self.assertEqual(caught.exception.status_code, 401)
                 self.assertEqual(
                     caught.exception.headers, {"WWW-Authenticate": "Bearer"})
 
     def test_get_current_active_user_allows_enabled_user(self):
-        user = auth._get_user_by_username("alice")
+        user = auth._get_user_by_username(self.connection, "alice")
 
-        self.assertIs(asyncio.run(auth.get_current_active_user(user)), user)
+        self.assertIs(auth.get_current_active_user(user), user)
 
     def test_get_current_active_user_rejects_disabled_user(self):
         self.disable("alice")
-        user = auth._get_user_by_username("alice")
+        user = auth._get_user_by_username(self.connection, "alice")
 
         with self.assertRaises(HTTPException) as caught:
-            asyncio.run(auth.get_current_active_user(user))
+            auth.get_current_active_user(user)
         self.assertEqual(caught.exception.status_code, 400)
 
 
 class RoleTests(DatabaseTestCase):
     def role_of(self, username):
         return self.connection.execute(
-            "SELECT role FROM users WHERE username = ?", (username,)).fetchone()[0]
+            "SELECT role FROM users WHERE username = %s", (username,)).fetchone()[0]
 
     def test_users_are_drivers_by_default(self):
-        auth.create_user("alice", PASSWORD)
+        auth.create_user(self.connection, "alice", PASSWORD)
 
         self.assertEqual(self.role_of("alice"), "driver")
-        self.assertEqual(auth._get_user_by_username("alice").role, "driver")
+        self.assertEqual(auth._get_user_by_username(self.connection, "alice").role, "driver")
 
     def test_trusted_code_can_create_an_admin(self):
-        auth.create_user("boss", PASSWORD, role="admin")
+        auth.create_user(self.connection, "boss", PASSWORD, role="admin")
 
-        self.assertEqual(auth._get_user_by_username("boss").role, "admin")
+        self.assertEqual(auth._get_user_by_username(self.connection, "boss").role, "admin")
 
     def test_unknown_roles_are_rejected(self):
         with self.assertRaises(ValueError):
-            auth.create_user("alice", PASSWORD, role="superuser")
+            auth.create_user(self.connection, "alice", PASSWORD, role="superuser")
         self.assertIsNone(self.stored_user("alice"))
 
     def test_database_constraint_rejects_unknown_roles(self):
-        with self.assertRaises(sqlite3.IntegrityError):
+        with self.assertRaises(psycopg.errors.CheckViolation):
             self.connection.execute(
                 "INSERT INTO users (username, password_hash, role) VALUES ('x', 'h', 'superuser')")
+        self.connection.rollback()
 
     def test_set_user_role_changes_role_and_reports_missing_users(self):
-        auth.create_user("alice", PASSWORD)
+        auth.create_user(self.connection, "alice", PASSWORD)
 
-        self.assertTrue(auth.set_user_role("alice", "admin"))
+        self.assertTrue(auth.set_user_role(self.connection, "alice", "admin"))
         self.assertEqual(self.role_of("alice"), "admin")
-        self.assertFalse(auth.set_user_role("nobody", "admin"))
+        self.assertFalse(auth.set_user_role(self.connection, "nobody", "admin"))
 
     def test_role_dependencies_allow_only_the_matching_role(self):
-        auth.create_user("alice", PASSWORD)
-        auth.create_user("boss", PASSWORD, role="admin")
-        driver = auth._get_user_by_username("alice")
-        admin = auth._get_user_by_username("boss")
+        auth.create_user(self.connection, "alice", PASSWORD)
+        auth.create_user(self.connection, "boss", PASSWORD, role="admin")
+        driver = auth._get_user_by_username(self.connection, "alice")
+        admin = auth._get_user_by_username(self.connection, "boss")
 
-        self.assertIs(asyncio.run(auth.get_current_driver(driver)), driver)
-        self.assertIs(asyncio.run(auth.get_current_admin(admin)), admin)
+        self.assertIs(auth.get_current_driver(driver), driver)
+        self.assertIs(auth.get_current_admin(admin), admin)
         for dependency, user in (
             (auth.get_current_admin, driver),
             (auth.get_current_driver, admin),
         ):
             with self.assertRaises(HTTPException) as caught:
-                asyncio.run(dependency(user))
+                dependency(user)
             self.assertEqual(caught.exception.status_code, 403)
 
     def test_role_comes_from_the_database_not_the_token(self):
-        auth.create_user("alice", PASSWORD)
+        auth.create_user(self.connection, "alice", PASSWORD)
         token = auth.create_access_token({"sub": "alice", "role": "admin"})
 
-        self.assertEqual(auth.get_user_from_token(token).role, "driver")
-        auth.set_user_role("alice", "admin")
-        self.assertEqual(auth.get_user_from_token(token).role, "admin")
+        self.assertEqual(auth.get_user_from_token(self.connection, token).role, "driver")
+        auth.set_user_role(self.connection, "alice", "admin")
+        self.assertEqual(auth.get_user_from_token(self.connection, token).role, "admin")
 
 
 class CreateAdminTests(DatabaseTestCase):
@@ -321,7 +325,7 @@ class CreateAdminTests(DatabaseTestCase):
         return code, stderr.getvalue()
 
     def role_of(self, username):
-        user = auth._get_user_by_username(username)
+        user = auth._get_user_by_username(self.connection, username)
         return user.role if user else None
 
     def test_creates_an_admin_who_can_log_in(self):
@@ -329,7 +333,7 @@ class CreateAdminTests(DatabaseTestCase):
 
         self.assertEqual(code, 0)
         self.assertEqual(self.role_of("boss"), "admin")
-        self.assertTrue(auth.authenticate_user("boss", PASSWORD))
+        self.assertTrue(auth.authenticate_user(self.connection, "boss", PASSWORD))
 
     def test_password_is_stored_hashed(self):
         self.run_cli("boss")
@@ -353,7 +357,7 @@ class CreateAdminTests(DatabaseTestCase):
                 self.assertIsNone(self.role_of(username))
 
     def test_existing_user_is_not_changed_without_promote(self):
-        auth.create_user("alice", PASSWORD)
+        auth.create_user(self.connection, "alice", PASSWORD)
 
         code, error = self.run_cli("alice")
 
@@ -362,7 +366,7 @@ class CreateAdminTests(DatabaseTestCase):
         self.assertEqual(self.role_of("alice"), "driver")
 
     def test_promote_asks_for_confirmation_then_keeps_password(self):
-        auth.create_user("alice", PASSWORD)
+        auth.create_user(self.connection, "alice", PASSWORD)
 
         code, _ = self.run_cli("alice", "--promote", passwords=())
 
@@ -370,10 +374,10 @@ class CreateAdminTests(DatabaseTestCase):
         self.assertEqual(len(self.asked), 1)
         self.assertIn("'alice' (driver)", self.asked[0])
         self.assertEqual(self.role_of("alice"), "admin")
-        self.assertTrue(auth.authenticate_user("alice", PASSWORD))
+        self.assertTrue(auth.authenticate_user(self.connection, "alice", PASSWORD))
 
     def test_promote_accepts_yes_in_any_case(self):
-        auth.create_user("alice", PASSWORD)
+        auth.create_user(self.connection, "alice", PASSWORD)
 
         code, _ = self.run_cli("alice", "--promote", passwords=(), answer=" YES ")
 
@@ -381,7 +385,7 @@ class CreateAdminTests(DatabaseTestCase):
         self.assertEqual(self.role_of("alice"), "admin")
 
     def test_promote_is_cancelled_unless_the_answer_is_yes(self):
-        auth.create_user("alice", PASSWORD)
+        auth.create_user(self.connection, "alice", PASSWORD)
         for answer in ("", "n", "no", "maybe", EOFError()):
             with self.subTest(answer=repr(answer)):
                 code, error = self.run_cli(
@@ -392,7 +396,7 @@ class CreateAdminTests(DatabaseTestCase):
                 self.assertEqual(self.role_of("alice"), "driver")
 
     def test_promote_with_yes_flag_skips_the_prompt(self):
-        auth.create_user("alice", PASSWORD)
+        auth.create_user(self.connection, "alice", PASSWORD)
 
         code, _ = self.run_cli("alice", "--promote", "--yes", passwords=())
 
@@ -401,7 +405,7 @@ class CreateAdminTests(DatabaseTestCase):
         self.assertEqual(self.role_of("alice"), "admin")
 
     def test_promoting_an_admin_needs_no_prompt(self):
-        auth.create_user("boss", PASSWORD, role="admin")
+        auth.create_user(self.connection, "boss", PASSWORD, role="admin")
 
         code, _ = self.run_cli("boss", "--promote", passwords=())
 
@@ -436,7 +440,7 @@ class WebTestCase(DatabaseTestCase):
         return self.post_form("/login", username=username, password=password)
 
     def create_and_login(self, username="alice"):
-        auth.create_user(username, PASSWORD)
+        auth.create_user(self.connection, username, PASSWORD)
         response = self.login(username)
         self.assertEqual(response.status_code, 303)
         return response
@@ -471,7 +475,7 @@ class SignupRouteTests(WebTestCase):
     def test_signup_always_creates_a_driver(self):
         self.signup()
 
-        self.assertEqual(auth._get_user_by_username("alice").role, "driver")
+        self.assertEqual(auth._get_user_by_username(self.connection, "alice").role, "driver")
 
     def test_forged_role_field_in_signup_is_ignored(self):
         for forged in ("admin", "superuser"):
@@ -482,7 +486,7 @@ class SignupRouteTests(WebTestCase):
                     username=username, password=PASSWORD, role=forged)
 
                 self.assertEqual(response.status_code, 303)
-                self.assertEqual(auth._get_user_by_username(username).role, "driver")
+                self.assertEqual(auth._get_user_by_username(self.connection, username).role, "driver")
 
     def test_duplicate_username_is_a_conflict_and_keeps_username(self):
         self.signup()
@@ -563,7 +567,7 @@ class LoginRouteTests(WebTestCase):
         self.assertNotEqual(plain.text, created.text)
 
     def test_successful_login_sets_session_cookie_and_redirects(self):
-        auth.create_user("alice", PASSWORD)
+        auth.create_user(self.connection, "alice", PASSWORD)
 
         response = self.login()
 
@@ -580,15 +584,15 @@ class LoginRouteTests(WebTestCase):
 
         token = self.client.cookies.get(AUTH_COOKIE)
 
-        self.assertEqual(auth.get_user_from_token(token).username, "alice")
+        self.assertEqual(auth.get_user_from_token(self.connection, token).username, "alice")
 
     def test_login_ignores_username_case(self):
-        auth.create_user("alice", PASSWORD)
+        auth.create_user(self.connection, "alice", PASSWORD)
 
         self.assertEqual(self.login(username="ALICE").status_code, 303)
 
     def test_wrong_password_is_unauthorized_and_sets_no_cookie(self):
-        auth.create_user("alice", PASSWORD)
+        auth.create_user(self.connection, "alice", PASSWORD)
 
         response = self.login(password="wrong-password")
 
@@ -598,7 +602,7 @@ class LoginRouteTests(WebTestCase):
         self.assertNotIn(AUTH_COOKIE, response.headers.get("set-cookie", ""))
 
     def test_unknown_user_gets_the_same_error_as_wrong_password(self):
-        auth.create_user("alice", PASSWORD)
+        auth.create_user(self.connection, "alice", PASSWORD)
 
         wrong_password = self.login(password="wrong-password")
         unknown_user = self.login(username="nobody")
@@ -628,7 +632,7 @@ class LoginRouteTests(WebTestCase):
         self.assertNotIn("x" * 33, response.text)
 
     def test_disabled_user_can_still_log_in(self):
-        auth.create_user("alice", PASSWORD)
+        auth.create_user(self.connection, "alice", PASSWORD)
         self.disable("alice")
 
         response = self.login()
@@ -638,7 +642,7 @@ class LoginRouteTests(WebTestCase):
         self.assertEqual(self.client.get("/account").status_code, 200)
 
     def test_bad_csrf_token_is_rejected(self):
-        auth.create_user("alice", PASSWORD)
+        auth.create_user(self.connection, "alice", PASSWORD)
         self.client.get("/login")
 
         response = self.client.post(
@@ -717,7 +721,7 @@ class AccountPageTests(WebTestCase):
         self.assertRegex(response.text, CSRF_FIELD)
 
     def test_invalid_or_expired_cookie_redirects_to_login(self):
-        auth.create_user("alice", PASSWORD)
+        auth.create_user(self.connection, "alice", PASSWORD)
         expired = auth.create_access_token(
             {"sub": "alice"}, expires_delta=timedelta(minutes=-1))
         for token in ("not-a-jwt", expired):
@@ -760,7 +764,7 @@ class AccountPageTests(WebTestCase):
 class TokenEndpointTests(WebTestCase):
     def setUp(self):
         super().setUp()
-        auth.create_user("alice", PASSWORD)
+        auth.create_user(self.connection, "alice", PASSWORD)
 
     def test_valid_credentials_return_a_bearer_token(self):
         response = self.client.post(
@@ -770,7 +774,7 @@ class TokenEndpointTests(WebTestCase):
         body = response.json()
         self.assertEqual(body["token_type"], "bearer")
         self.assertEqual(
-            auth.get_user_from_token(body["access_token"]).username, "alice")
+            auth.get_user_from_token(self.connection, body["access_token"]).username, "alice")
 
     def test_wrong_credentials_are_unauthorized(self):
         for data in (

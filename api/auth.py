@@ -1,4 +1,3 @@
-import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Literal, Optional, get_args
 
@@ -6,11 +5,12 @@ import jwt
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from jwt.exceptions import InvalidTokenError
+from psycopg import Connection, errors
 from pwdlib import PasswordHash
 from pydantic import BaseModel
 
 from api.config import ALGORITHM, AUTH_COOKIE, SECRET_KEY
-from api.db import CONNECTION
+from api.db import DbDep
 
 
 password_hash = PasswordHash.recommended()
@@ -49,9 +49,10 @@ def get_password_hash(password: str) -> str:
     return password_hash.hash(password)
 
 
-def _get_user_by_username(username: str):
-    row = CONNECTION.execute(
-        "SELECT username, password_hash, disabled, role, id FROM users WHERE username = ?",
+def _get_user_by_username(connection: Connection, username: str) -> UserInDB | None:
+    row = connection.execute(
+        "SELECT username, password_hash, disabled, role, id FROM users"
+        " WHERE lower(username) = lower(%s)",
         (username,),
     ).fetchone()
     if row:
@@ -65,8 +66,8 @@ def _get_user_by_username(username: str):
     return None
 
 
-def authenticate_user(username: str,  password: str):
-    user = _get_user_by_username(username)
+def authenticate_user(connection: Connection, username: str, password: str):
+    user = _get_user_by_username(connection, username)
     if not user:
         # This ensures the endpoint takes roughly the same
         # amount of time to respond whether the username is
@@ -90,7 +91,7 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None):
     return encoded_jwt
 
 
-def get_user_from_token(token: str | None) -> UserInDB | None:
+def get_user_from_token(connection: Connection, token: str | None) -> UserInDB | None:
     """Return the user a valid access token belongs to, or None."""
     if not token:
         return None
@@ -101,11 +102,13 @@ def get_user_from_token(token: str | None) -> UserInDB | None:
     username = payload.get("sub")
     if not username:
         return None
-    return _get_user_by_username(username=username)
+    return _get_user_by_username(connection, username)
 
 
-async def get_current_user(token: Annotated[str | None, Depends(oauth2_scheme)]):
-    user = get_user_from_token(token)
+def get_current_user(
+    token: Annotated[str | None, Depends(oauth2_scheme)], connection: DbDep
+):
+    user = get_user_from_token(connection, token)
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -115,7 +118,7 @@ async def get_current_user(token: Annotated[str | None, Depends(oauth2_scheme)])
     return user
 
 
-async def get_current_active_user(
+def get_current_active_user(
     current_user: Annotated[UserInDB, Depends(get_current_user)],
 ):
     if current_user.disabled:
@@ -124,7 +127,7 @@ async def get_current_active_user(
     return current_user
 
 
-async def get_current_admin(
+def get_current_admin(
     current_user: Annotated[UserInDB, Depends(get_current_user)],
 ):
     if current_user.role != "admin":
@@ -133,7 +136,7 @@ async def get_current_admin(
     return current_user
 
 
-async def get_current_driver(
+def get_current_driver(
     current_user: Annotated[UserInDB, Depends(get_current_user)],
 ):
     if current_user.role != "driver":
@@ -142,15 +145,17 @@ async def get_current_driver(
     return current_user
 
 
-async def get_optional_user_from_cookie(request: Request) -> UserInDB | None:
+def get_optional_user_from_cookie(
+    request: Request, connection: DbDep
+) -> UserInDB | None:
     """The user behind the auth cookie, or None when logged out (for HTML pages)."""
-    return get_user_from_token(request.cookies.get(AUTH_COOKIE))
+    return get_user_from_token(connection, request.cookies.get(AUTH_COOKIE))
 
 
 OptionalUserDep = Annotated[UserInDB | None, Depends(get_optional_user_from_cookie)]
 
 
-async def get_user_from_cookie(user: OptionalUserDep) -> UserInDB:
+def get_user_from_cookie(user: OptionalUserDep) -> UserInDB:
     """The logged-in user for HTML pages; logged-out visitors are redirected to /login."""
     if user is None:
         raise HTTPException(
@@ -162,19 +167,19 @@ async def get_user_from_cookie(user: OptionalUserDep) -> UserInDB:
 UserDep = Annotated[UserInDB, Depends(get_user_from_cookie)]
 
 
-async def get_admin_from_cookie(user: UserDep) -> UserInDB:
+def get_admin_from_cookie(user: UserDep) -> UserInDB:
     """The admin behind the auth cookie, for HTML pages.
 
     Logged-out visitors are redirected to /login; other users get a 403.
     """
-    return await get_current_admin(user)
+    return get_current_admin(user)
 
 
 AdminDep = Annotated[UserInDB, Depends(get_admin_from_cookie)]
 
 
 def create_user(
-    username: str, password: str, role: Role = "driver"
+    connection: Connection, username: str, password: str, role: Role = "driver"
 ) -> Optional[int]:
     """Create a user; return its id, or None if the username is taken.
 
@@ -184,19 +189,20 @@ def create_user(
     if role not in get_args(Role):
         raise ValueError(f"Unknown role: {role!r}")
     try:
-        cursor = CONNECTION.execute(
-            "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
+        row = connection.execute(
+            "INSERT INTO users (username, password_hash, role) VALUES (%s, %s, %s) RETURNING id",
             (username, get_password_hash(password), role),
-        )
-    except sqlite3.IntegrityError:
+        ).fetchone()
+    except errors.UniqueViolation:
+        connection.rollback()
         return None
-    CONNECTION.commit()
-    return cursor.lastrowid
+    connection.commit()
+    return row[0] if row else None
 
 
-def set_user_role(username: str, role: Role) -> bool:
+def set_user_role(connection: Connection, username: str, role: Role) -> bool:
     """Change a user's role; return False if the user does not exist."""
-    cursor = CONNECTION.execute(
-        "UPDATE users SET role = ? WHERE username = ?", (role, username))
-    CONNECTION.commit()
+    cursor = connection.execute(
+        "UPDATE users SET role = %s WHERE lower(username) = lower(%s)", (role, username))
+    connection.commit()
     return cursor.rowcount == 1

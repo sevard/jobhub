@@ -13,8 +13,11 @@ wheels/
 # Virtual environments
 .venv
 
-# sqlite database files
+# local SQLite database files (no longer used)
 *.db
 
 # Local secrets (copy config.ini.example to config.ini)
 config.ini
+
+# Docker compose variables (database password)
+.env
