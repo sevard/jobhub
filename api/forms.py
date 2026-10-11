@@ -1,14 +1,18 @@
-from fastapi import Request
+from typing import Annotated
+
+from fastapi import Depends, Request
 from fastapi.responses import HTMLResponse
 from fastapi_csrf_protect.flexible import CsrfProtect
 from pydantic import BaseModel, ConfigDict, Field, NaiveDatetime
 
 from api.config import templates
 
+CsrfDep = Annotated[CsrfProtect, Depends()]
+
 USERNAME_MAX_LENGTH = 32
 USERNAME_PATTERN = r"^[A-Za-z0-9_]+$"
 RIDE_LOCATION_MAX_LENGTH = 200
-RIDE_NOTES_MAX_LENGTH = 500
+RIDE_NOTES_MAX_LENGTH = 1024
 
 
 class SignupFormData(BaseModel):

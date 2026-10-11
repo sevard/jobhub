@@ -142,18 +142,35 @@ async def get_current_driver(
     return current_user
 
 
-async def get_admin_from_cookie(request: Request) -> UserInDB:
+async def get_optional_user_from_cookie(request: Request) -> UserInDB | None:
+    """The user behind the auth cookie, or None when logged out (for HTML pages)."""
+    return get_user_from_token(request.cookies.get(AUTH_COOKIE))
+
+
+OptionalUserDep = Annotated[UserInDB | None, Depends(get_optional_user_from_cookie)]
+
+
+async def get_user_from_cookie(user: OptionalUserDep) -> UserInDB:
+    """The logged-in user for HTML pages; logged-out visitors are redirected to /login."""
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_303_SEE_OTHER, headers={"Location": "/login"}
+        )
+    return user
+
+
+UserDep = Annotated[UserInDB, Depends(get_user_from_cookie)]
+
+
+async def get_admin_from_cookie(user: UserDep) -> UserInDB:
     """The admin behind the auth cookie, for HTML pages.
 
     Logged-out visitors are redirected to /login; other users get a 403.
     """
-    try:
-        user = await get_current_user(request.cookies.get(AUTH_COOKIE))
-    except HTTPException:
-        raise HTTPException(
-            status_code=status.HTTP_303_SEE_OTHER, headers={"Location": "/login"}
-        ) from None
     return await get_current_admin(user)
+
+
+AdminDep = Annotated[UserInDB, Depends(get_admin_from_cookie)]
 
 
 def create_user(

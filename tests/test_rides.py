@@ -263,7 +263,7 @@ class CreateRideTests(AdminWebTestCase):
 
     def test_maximum_length_values_are_accepted(self):
         response = self.create_ride(
-            pickup_location="p" * 200, dropoff_location="d" * 200, notes="n" * 500)
+            pickup_location="p" * 200, dropoff_location="d" * 200, notes="n" * 1024)
 
         self.assertEqual(response.status_code, 303)
 
@@ -329,7 +329,7 @@ class InvalidRideTests(AdminWebTestCase):
         for overrides in (
             {"pickup_location": "p" * 201},
             {"dropoff_location": "d" * 201},
-            {"notes": "n" * 501},
+            {"notes": "n" * 1025},
         ):
             with self.subTest(field=list(overrides)):
                 self.assert_rejected(self.create_ride(**overrides))
@@ -348,7 +348,7 @@ class InvalidRideTests(AdminWebTestCase):
 
         self.assertEqual(response.status_code, 422)
         self.assertNotIn("x" * 201, response.text)
-        self.assertNotIn("n" * 501, response.text)
+        self.assertNotIn("n" * 1000, response.text)
         self.assertNotIn("<script>alert(1)</script>", response.text)
 
     def test_rejected_page_still_lists_existing_rides_and_has_a_fresh_token(self):

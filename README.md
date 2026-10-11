@@ -148,7 +148,7 @@ An admin creates a ride request on the dashboard at `/admin`. Each ride request 
 | Pickup location | Required, up to 200 characters |
 | Drop-off location | Required, up to 200 characters |
 | Pickup date and time | Required, a local date and time without a time zone (the form uses a browser date-time picker) |
-| Notes | Optional, up to 500 characters |
+| Notes | Optional, up to 1024 characters |
 | Available | Not on the form: set automatically, `true` for a new ride request (a ride a driver can still take) |
 
 Leading and trailing spaces are trimmed. The ride is also stored with the id of
@@ -177,7 +177,7 @@ first, with an Available column.
 ## WebSocket
 
 `/ws` accepts a connection and keeps it open, ignoring anything the client
-sends. The `ConnectionManager` in [api/main.py](api/main.py) can broadcast to
+sends. The `ConnectionManager` in [api/ws.py](api/ws.py) can broadcast to
 all connected clients, but nothing calls it yet, and the endpoint does not check
 that the user is logged in. Requiring login and sending ride-request events are
 part of the planned work.
@@ -202,7 +202,11 @@ Both run against an in-memory database.
 
 ```text
 api/
-  main.py      FastAPI app: pages, form routes, token endpoint, WebSocket
+  main.py      FastAPI app setup: CSRF, error handlers, middleware, routers, static files
+  pages.py     Router for the landing, sign-up, log-in, log-out and account pages
+  admin.py     Router for the admin dashboard and ride request form
+  endpoints.py Health check and token endpoint
+  ws.py        WebSocket endpoint and ConnectionManager
   auth.py      Password hashing, JWT tokens, user lookup and creation, role checks
   create_admin.py  Command-line tool to create or promote an admin
   rides.py     Ride request storage (create and list)

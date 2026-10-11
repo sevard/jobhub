@@ -14,6 +14,7 @@
 ### Changed
 - Reworked the app into a FastAPI service split into `api/main.py`, `auth.py`, `config.py`, `db.py`, `forms.py` and `rides.py`, with Jinja2 templates in `ui/templates/`.
 - The server runs on port 8080 by default.
+- Split the routes out of `api/main.py` into `APIRouter` modules (`pages.py`, `admin.py`, `endpoints.py`, `ws.py`); the admin router applies the admin check to every route. Pages read the cookie user through `OptionalUserDep` and `UserDep` dependencies instead of calling `get_current_user` by hand.
 
 ### Removed
 - The earlier dispatcher/driver job board: the `dispatcher` role (replaced by `admin`), the `jobs` table, the `/post`, `/feed` and `/account/*` routes, the `/api/get_jobs` endpoint, the old templates and tests, and scrypt password hashing (replaced by Argon2). There is no migration; delete an old `jobhub.db` after upgrading.
