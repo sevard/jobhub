@@ -222,7 +222,8 @@ api/
   db.py        PostgreSQL connection pool, per-request connection dependency, table setup
   forms.py     Sign-up, log-in and ride request form models, CSRF form helpers, and the signup/login page helper
 utils/
-  create_admin.py  Command-line tool to create or promote an admin
+  create_admin.py  Command-line tool to create or promote an admin (see utils/README.md)
+  README.md, HOWTO.md  Documentation for the tools, including the Docker steps
 tests/         Backend tests
 ui/
   templates/   Jinja2 page templates
