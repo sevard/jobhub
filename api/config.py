@@ -32,6 +32,10 @@ if not DATABASE_URL:
 
 AUTH_COOKIE = "auth_token"
 ACCESS_TOKEN_EXPIRE_SECONDS = 60 * 60 * 24  # 24 hours
+# A cookie token with less than this left is replaced by a fresh one on the next page request
+ACCESS_TOKEN_REFRESH_SECONDS = ACCESS_TOKEN_EXPIRE_SECONDS // 2
+# Renewals stop this long after the real login, however active the user is
+SESSION_MAX_SECONDS = 60 * 60 * 24 * 7  # 7 days
 
 # to get new secret run: openssl rand -hex 22
 SECRET_KEY = _config.get("auth", "secret_key")

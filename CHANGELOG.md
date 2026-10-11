@@ -16,6 +16,7 @@
 - The server runs on port 8080 by default.
 - Documented the `create_admin` tool in `utils/README.md` and `utils/HOWTO.md`, including the Docker steps.
 - Moved the `create_admin` command-line tool from `api/` to `utils/` (`uv run python -m utils.create_admin`).
+- Sliding login sessions: a page request made when less than 12 hours of the 24-hour login token remain sets a fresh 24-hour cookie, so active users stay logged in. The login time is stored in the token (`auth_time`) and renewals stop 7 days after it, so every login ends at most 7 days after the real login. `/ws` now accepts only logged-in users (code 1008 otherwise) and closes with code 1008 when the token expires.
 - Moved storage from SQLite to PostgreSQL with `psycopg` and a connection pool. Each request borrows its own connection through the `DbDep` dependency, so route handlers and auth dependencies are plain `def` (run in the threadpool): Argon2 hashing and database calls no longer block the event loop. `compose.yaml` starts PostgreSQL with its user and password from the git-ignored `.env`; `DATABASE_URL` or `[database] url` in the git-ignored `config.ini` sets the connection (no credentials in source code). The host port is `POSTGRES_PORT` in `.env` (default 5432). Existing SQLite data is not migrated.
 - CSRF form validation is now a route dependency, so it runs before the form model is validated.
 - Split the routes out of `api/main.py` into `APIRouter` modules (`pages.py`, `admin.py`, `endpoints.py`, `ws.py`); the admin router applies the admin check to every route. Pages read the cookie user through `OptionalUserDep` and `UserDep` dependencies instead of calling `get_current_user` by hand.
@@ -26,5 +27,5 @@
 
 ### Known issues
 - Ride requests cannot yet be edited, cancelled, taken or cancelled by drivers, or read through an API.
-- Nothing is broadcast over `/ws`, and `/ws` does not yet require a logged-in user.
+- Nothing is broadcast over `/ws` yet.
 - There are no database migrations; recreate the database after schema changes.

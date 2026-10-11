@@ -2,11 +2,13 @@ import atexit
 import io
 import re
 import sys
+import time
 import unittest
 import warnings
 from contextlib import redirect_stderr, redirect_stdout
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 BASE = Path(__file__).resolve().parents[1]
@@ -15,15 +17,18 @@ if str(BASE) not in sys.path:
 
 import tests.testdb  # noqa: E402,F401  (must come before any api import)
 import api.auth as auth  # noqa: E402
+import api.ws as ws  # noqa: E402
 import utils.create_admin as create_admin  # noqa: E402
 import api.db as db  # noqa: E402
 from api.forms import LoginFormData, SignupFormData  # noqa: E402
 
 warnings.filterwarnings("ignore", message=".*httpx.*")
+import jwt  # noqa: E402
 import psycopg  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from pydantic import ValidationError  # noqa: E402
+from starlette.websockets import WebSocketDisconnect  # noqa: E402
 
 from api.config import AUTH_COOKIE  # noqa: E402
 from api.main import app  # noqa: E402
@@ -179,6 +184,23 @@ class TokenTests(DatabaseTestCase):
         token = auth.create_access_token({"sub": "alice"})
 
         self.assertEqual(auth.get_user_from_token(self.connection, token).username, "alice")
+
+    def test_session_token_lasts_24_hours_and_records_the_login_time(self):
+        token = auth.create_session_token("alice")
+
+        claims = jwt.decode(token, auth.SECRET_KEY, algorithms=[auth.ALGORITHM])
+        self.assertEqual(claims["sub"], "alice")
+        self.assertAlmostEqual(claims["auth_time"], time.time(), delta=5)
+        self.assertAlmostEqual(claims["exp"], time.time() + 24 * 3600, delta=5)
+
+    def test_session_token_expiry_never_passes_seven_days_after_the_login(self):
+        started = time.time() - 6.5 * 24 * 3600
+
+        claims = jwt.decode(
+            auth.create_session_token("alice", started), auth.SECRET_KEY, algorithms=[auth.ALGORITHM])
+
+        self.assertEqual(claims["auth_time"], int(started))
+        self.assertEqual(claims["exp"], int(started) + 7 * 24 * 3600)
 
     def test_missing_or_garbage_token_gives_none(self):
         for token in (None, "", "not-a-jwt"):
@@ -798,6 +820,245 @@ class TokenEndpointTests(WebTestCase):
             "/token", data={"username": "alice", "password": PASSWORD})
 
         self.assertEqual(response.status_code, 200)
+
+
+class SlidingSessionTests(WebTestCase):
+    """A login token that is about to expire is renewed on the next page request."""
+
+    def set_token(self, expires_delta, username="alice", logged_in_ago=timedelta(hours=1)):
+        """Put a login cookie in the client: it expires in `expires_delta`, and the real login was `logged_in_ago`."""
+        token = auth.create_access_token(
+            {"sub": username, "auth_time": int(time.time() - logged_in_ago.total_seconds())},
+            expires_delta=expires_delta,
+        )
+        self.client.cookies.clear()
+        self.client.cookies.set(AUTH_COOKIE, token)
+        return token
+
+    def renewed_token(self, response):
+        header = response.headers.get("set-cookie", "")
+        match = re.search(rf"{AUTH_COOKIE}=([^;]+)", header)
+        return match.group(1) if match else None
+
+    def setUp(self):
+        super().setUp()
+        auth.create_user(self.connection, "alice", PASSWORD)
+
+    def test_fresh_login_token_is_not_renewed(self):
+        self.assertEqual(self.login().status_code, 303)
+
+        response = self.client.get("/account")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(self.renewed_token(response))
+
+    def claims(self, token):
+        return jwt.decode(token, auth.SECRET_KEY, algorithms=[auth.ALGORITHM])
+
+    def test_login_records_the_login_time_in_the_token(self):
+        before = int(time.time())
+        self.assertEqual(self.login().status_code, 303)
+
+        claims = self.claims(self.client.cookies[AUTH_COOKIE])
+
+        self.assertGreaterEqual(claims["auth_time"], before)
+        self.assertLessEqual(claims["auth_time"], time.time())
+        self.assertAlmostEqual(claims["exp"], time.time() + 24 * 3600, delta=5)
+
+    def test_token_with_less_than_half_its_life_left_is_renewed(self):
+        old = self.set_token(timedelta(hours=1), logged_in_ago=timedelta(hours=23))
+
+        response = self.client.get("/account")
+
+        self.assertEqual(response.status_code, 200)
+        new = self.renewed_token(response)
+        self.assertIsNotNone(new)
+        self.assertNotEqual(new, old)
+        self.assertEqual(auth.get_user_from_token(self.connection, new).username, "alice")
+        claims = self.claims(new)
+        self.assertGreater(claims["exp"] - time.time(), 23 * 3600)
+        self.assertEqual(claims["auth_time"], self.claims(old)["auth_time"])
+        header = response.headers["set-cookie"]
+        self.assertIn("HttpOnly", header)
+        self.assertIn("SameSite=lax", header)
+        self.assertIn(f"Max-Age={auth.ACCESS_TOKEN_EXPIRE_SECONDS}", header)
+
+    def test_renewed_token_keeps_the_session_alive(self):
+        self.set_token(timedelta(hours=1), logged_in_ago=timedelta(hours=23))
+        response = self.client.get("/account")
+        self.client.cookies.set(AUTH_COOKIE, self.renewed_token(response))
+
+        self.assertEqual(self.client.get("/account").status_code, 200)
+        self.assertIsNone(self.renewed_token(self.client.get("/account")))
+
+    def test_renewal_is_capped_at_seven_days_after_the_login(self):
+        old = self.set_token(timedelta(hours=1), logged_in_ago=timedelta(days=7) - timedelta(hours=5))
+
+        new = self.renewed_token(self.client.get("/account"))
+
+        claims = self.claims(new)
+        self.assertEqual(claims["exp"], claims["auth_time"] + 7 * 24 * 3600)
+        self.assertAlmostEqual(claims["exp"], time.time() + 5 * 3600, delta=5)
+        self.assertEqual(claims["auth_time"], self.claims(old)["auth_time"])
+
+    def test_no_renewal_once_the_cap_is_reached(self):
+        self.set_token(timedelta(hours=1), logged_in_ago=timedelta(days=7) - timedelta(hours=1))
+
+        response = self.client.get("/account")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(self.renewed_token(response))
+
+    def test_no_renewal_after_the_cap(self):
+        self.set_token(timedelta(hours=1), logged_in_ago=timedelta(days=8))
+
+        response = self.client.get("/account")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(self.renewed_token(response))
+
+    def at(self, now):
+        """Make the auth module think it is `now` (epoch seconds)."""
+        return patch.multiple(
+            auth,
+            time=SimpleNamespace(time=lambda: now),
+            datetime=SimpleNamespace(now=lambda tz=None: datetime.fromtimestamp(now, tz)),
+        )
+
+    def test_a_session_ends_seven_days_after_login_however_active(self):
+        started = time.time()
+        with self.at(started):
+            self.assertEqual(self.login().status_code, 303)
+        token = self.client.cookies[AUTH_COOKIE]
+        # an active user comes back every 13 hours; the renewals must stop at 7 days
+        now = started
+        while True:
+            now += 13 * 3600
+            self.assertLess(now, started + 8 * 24 * 3600, "session never ended")
+            self.client.cookies.clear()
+            self.client.cookies.set(AUTH_COOKIE, token)
+            with self.at(now):
+                response = self.client.get("/account")
+            renewed = self.renewed_token(response)
+            if renewed is None:
+                break
+            token = renewed
+        self.assertEqual(self.claims_ignoring_expiry(token)["exp"], int(started) + 7 * 24 * 3600)
+        self.assertGreater(now, started + 6 * 24 * 3600)
+
+    def claims_ignoring_expiry(self, token):
+        return jwt.decode(
+            token, auth.SECRET_KEY, algorithms=[auth.ALGORITHM], options={"verify_exp": False})
+
+    def test_token_without_a_login_time_is_not_renewed(self):
+        token = auth.create_access_token({"sub": "alice"}, timedelta(hours=1))
+        self.client.cookies.clear()
+        self.client.cookies.set(AUTH_COOKIE, token)
+
+        response = self.client.get("/account")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(self.renewed_token(response))
+
+    def test_token_with_more_than_half_its_life_left_is_not_renewed(self):
+        self.set_token(timedelta(hours=20))
+
+        self.assertIsNone(self.renewed_token(self.client.get("/account")))
+
+    def test_expired_token_is_not_renewed(self):
+        self.set_token(timedelta(minutes=-1))
+
+        response = self.client.get("/account")
+
+        self.assertEqual(response.status_code, 303)
+        self.assertIsNone(self.renewed_token(response))
+
+    def test_token_of_a_deleted_user_is_not_renewed(self):
+        self.set_token(timedelta(hours=1), username="ghost")
+
+        response = self.client.get("/account")
+
+        self.assertEqual(response.status_code, 303)
+        self.assertIsNone(self.renewed_token(response))
+
+    def test_landing_and_login_pages_renew_a_token_too(self):
+        for url in ("/", "/login"):
+            with self.subTest(url=url):
+                self.set_token(timedelta(hours=1), logged_in_ago=timedelta(hours=23))
+                response = self.client.get(url)
+
+                self.assertEqual(response.status_code, 303)
+                self.assertIsNotNone(self.renewed_token(response))
+
+    def test_logout_still_clears_the_cookie(self):
+        self.set_token(timedelta(hours=1))
+        token = self.csrf_token("/account")
+
+        response = self.client.post("/logout", data={"csrf_token": token})
+
+        self.assertIn("Max-Age=0", response.headers["set-cookie"])
+
+    def test_pages_without_a_cookie_set_no_cookie_from_this_feature(self):
+        response = self.client.get("/login")
+
+        self.assertNotIn(AUTH_COOKIE, response.headers.get("set-cookie", ""))
+
+    def test_bearer_api_tokens_are_not_renewed(self):
+        token = auth.create_access_token({"sub": "alice"}, timedelta(hours=1))
+
+        response = TestClient(app).get("/api/health", headers={"Authorization": f"Bearer {token}"})
+
+        self.assertNotIn("set-cookie", response.headers)
+
+
+class WebSocketTests(WebTestCase):
+    """/ws is for logged-in users and closes when their login token expires."""
+
+    def setUp(self):
+        super().setUp()
+        auth.create_user(self.connection, "alice", PASSWORD)
+
+    def assert_rejected(self):
+        with self.assertRaises(WebSocketDisconnect) as caught:
+            with self.client.websocket_connect("/ws"):
+                pass
+        self.assertEqual(caught.exception.code, 1008)
+
+    def test_anonymous_connection_is_rejected(self):
+        self.assert_rejected()
+
+    def test_garbage_and_expired_tokens_are_rejected(self):
+        expired = auth.create_access_token({"sub": "alice"}, timedelta(minutes=-1))
+        for token in ("not-a-jwt", expired):
+            with self.subTest(token=token[:10]):
+                self.client.cookies.set(AUTH_COOKIE, token)
+                self.assert_rejected()
+
+    def test_token_of_an_unknown_user_is_rejected(self):
+        self.client.cookies.set(AUTH_COOKIE, auth.create_access_token({"sub": "ghost"}))
+
+        self.assert_rejected()
+
+    def test_logged_in_user_can_connect_and_is_tracked(self):
+        self.login()
+        manager = ws.manager
+
+        with self.client.websocket_connect("/ws") as websocket:
+            self.assertEqual(len(manager.active_connections), 1)
+            websocket.send_text("ignored")
+
+        self.assertEqual(len(manager.active_connections), 0)
+
+    def test_connection_is_closed_when_the_token_expires(self):
+        self.client.cookies.set(
+            AUTH_COOKIE, auth.create_access_token({"sub": "alice"}, timedelta(seconds=2)))
+
+        with self.client.websocket_connect("/ws") as websocket:
+            with self.assertRaises(WebSocketDisconnect) as caught:
+                websocket.receive_text()
+
+        self.assertEqual(caught.exception.code, 1008)
+        self.assertEqual(len(ws.manager.active_connections), 0)
 
 
 class HealthTests(unittest.TestCase):

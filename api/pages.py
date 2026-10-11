@@ -1,4 +1,3 @@
-from datetime import timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Form, Request, Response, status
@@ -8,11 +7,12 @@ from api.auth import (
     OptionalUserDep,
     UserDep,
     authenticate_user,
-    create_access_token,
+    create_session_token,
     create_user,
+    set_auth_cookie,
 )
 from api.db import DbDep
-from api.config import ACCESS_TOKEN_EXPIRE_SECONDS, AUTH_COOKIE, templates
+from api.config import AUTH_COOKIE, templates
 from api.forms import (
     CsrfDep,
     CsrfFormCheck,
@@ -86,19 +86,10 @@ def post_login_page(
             username=form.username,
             status_code=status.HTTP_401_UNAUTHORIZED,
         )
-    access_token = create_access_token(
-        data={"sub": user.username},
-        expires_delta=timedelta(seconds=ACCESS_TOKEN_EXPIRE_SECONDS),
-    )
+    access_token = create_session_token(user.username)
     response = RedirectResponse(
         "/account", status_code=status.HTTP_303_SEE_OTHER)
-    response.set_cookie(
-        AUTH_COOKIE,
-        access_token,
-        max_age=ACCESS_TOKEN_EXPIRE_SECONDS,
-        httponly=True,
-        samesite="lax",
-    )
+    set_auth_cookie(response, access_token)
     return response
 
 

@@ -35,7 +35,7 @@ Working now:
 - An admin dashboard at `/admin` where an admin creates ride requests (see
   [Ride requests](#ride-requests)).
 - A bearer-token login endpoint (`POST /token`) and a health check.
-- A `/ws` WebSocket endpoint that accepts connections (see
+- A `/ws` WebSocket endpoint for logged-in users (see
   [WebSocket](#websocket)).
 
 Not implemented yet:
@@ -91,7 +91,8 @@ git-ignored `.env` (template: `.env.example`). Change the user or password in `c
 and `.env` together; an existing database volume keeps its old user and password until you
 recreate it (`docker compose down -v`).
 
-The 24-hour session lifetime is set in [api/config.py](api/config.py).
+The 24-hour token lifetime, the renewal point (12 hours) and the 7-day session
+limit are set in [api/config.py](api/config.py).
 
 ## Application pages
 
@@ -113,7 +114,12 @@ cookie.
 - Username: 3-32 letters, digits or `_` (case-insensitive and unique).
 - Password: 8-128 characters, stored as an Argon2 hash.
 - A successful login sets an HttpOnly, `SameSite=Lax` `auth_token` cookie
-  holding a JWT that expires after 24 hours.
+  holding a JWT that expires after 24 hours. The login is renewed while you are
+  active: a page request made when less than 12 hours remain sets a fresh 24-hour
+  cookie, so only users idle for more than 24 hours must log in again. A login
+  still ends 7 days after the real login, however active the user is: the login
+  time is stored in the token (`auth_time`) and carried over each renewal.
+  Bearer tokens from `POST /token` are not renewed.
 - Sign-up and log-in forms that fail validation are shown again with an error,
   and the log-in page gives the same generic message for any failure.
 - Accounts have a `disabled` flag. Disabled accounts can still log in and use
@@ -183,11 +189,15 @@ first, with an Available column.
 
 ## WebSocket
 
-`/ws` accepts a connection and keeps it open, ignoring anything the client
-sends. The `ConnectionManager` in [api/ws.py](api/ws.py) can broadcast to
-all connected clients, but nothing calls it yet, and the endpoint does not check
-that the user is logged in. Requiring login and sending ride-request events are
-part of the planned work.
+`/ws` accepts a connection only from a logged-in user, using the `auth_token`
+cookie: anyone else is refused (the handshake is closed with code 1008, which
+browsers see as an HTTP 403). It keeps the connection open and ignores anything
+the client sends. The connection is closed with code 1008 and the reason
+`Session expired` when the login token expires, so a client should reload the
+page, which renews or redirects to the login page, instead of reconnecting
+blindly. The `ConnectionManager` in [api/ws.py](api/ws.py) can broadcast to all
+connected clients, but nothing calls it yet; sending ride-request events is part
+of the planned work.
 
 ## Tests
 

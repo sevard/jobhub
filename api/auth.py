@@ -1,15 +1,23 @@
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Literal, Optional, get_args
 
 import jwt
-from fastapi import Depends, HTTPException, Request, status
+from fastapi import Depends, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordBearer
 from jwt.exceptions import InvalidTokenError
 from psycopg import Connection, errors
 from pwdlib import PasswordHash
 from pydantic import BaseModel
 
-from api.config import ALGORITHM, AUTH_COOKIE, SECRET_KEY
+from api.config import (
+    ACCESS_TOKEN_EXPIRE_SECONDS,
+    ACCESS_TOKEN_REFRESH_SECONDS,
+    ALGORITHM,
+    AUTH_COOKIE,
+    SECRET_KEY,
+    SESSION_MAX_SECONDS,
+)
 from api.db import DbDep
 
 
@@ -91,18 +99,60 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None):
     return encoded_jwt
 
 
-def get_user_from_token(connection: Connection, token: str | None) -> UserInDB | None:
-    """Return the user a valid access token belongs to, or None."""
+def _session_expiry(started_at: float, now: float) -> int:
+    """When a login cookie token issued at `now` expires: 24 hours, but never past the 7-day cap."""
+    return int(min(now + ACCESS_TOKEN_EXPIRE_SECONDS, started_at + SESSION_MAX_SECONDS))
+
+
+def create_session_token(username: str, started_at: float | None = None) -> str:
+    """A login cookie token.
+
+    `started_at` is when the user really logged in. It is stored in the
+    `auth_time` claim and carried over every renewal, so renewals stop
+    `SESSION_MAX_SECONDS` after the login.
+    """
+    now = time.time()
+    started_at = int(now if started_at is None else started_at)
+    expires_at = _session_expiry(started_at, now)
+    return create_access_token(
+        {"sub": username, "auth_time": started_at},
+        timedelta(seconds=expires_at - now),
+    )
+
+
+def decode_access_token(token: str | None) -> dict | None:
+    """The claims of a valid, unexpired access token, or None."""
     if not token:
         return None
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
     except InvalidTokenError:
+        return None
+
+
+def get_user_from_payload(connection: Connection, payload: dict | None) -> UserInDB | None:
+    """The user named by the token claims, read from the database, or None."""
+    if payload is None:
         return None
     username = payload.get("sub")
     if not username:
         return None
     return _get_user_by_username(connection, username)
+
+
+def get_user_from_token(connection: Connection, token: str | None) -> UserInDB | None:
+    """Return the user a valid access token belongs to, or None."""
+    return get_user_from_payload(connection, decode_access_token(token))
+
+
+def set_auth_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        AUTH_COOKIE,
+        token,
+        max_age=ACCESS_TOKEN_EXPIRE_SECONDS,
+        httponly=True,
+        samesite="lax",
+    )
 
 
 def get_current_user(
@@ -148,8 +198,30 @@ def get_current_driver(
 def get_optional_user_from_cookie(
     request: Request, connection: DbDep
 ) -> UserInDB | None:
-    """The user behind the auth cookie, or None when logged out (for HTML pages)."""
-    return get_user_from_token(connection, request.cookies.get(AUTH_COOKIE))
+    """The user behind the auth cookie, or None when logged out (for HTML pages).
+
+    A token that is about to expire is replaced: the new token is parked on the
+    request, and the `refresh_auth_cookie` middleware sets it on the response.
+    Active users therefore stay logged in, while idle users still expire, and no
+    login lasts longer than `SESSION_MAX_SECONDS` from the real login.
+    """
+    payload = decode_access_token(request.cookies.get(AUTH_COOKIE))
+    user = get_user_from_payload(connection, payload)
+    if user is not None and payload is not None:
+        now = time.time()
+        expires_at = payload.get("exp")
+        started_at = payload.get("auth_time")
+        # Tokens without auth_time are never renewed; they just run out
+        if (
+            expires_at is not None
+            and isinstance(started_at, int)
+            and expires_at - now < ACCESS_TOKEN_REFRESH_SECONDS
+            and _session_expiry(started_at, now) > expires_at
+        ):
+            request.state.refreshed_auth_token = create_session_token(
+                user.username, started_at
+            )
+    return user
 
 
 OptionalUserDep = Annotated[UserInDB | None, Depends(get_optional_user_from_cookie)]

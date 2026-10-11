@@ -18,6 +18,7 @@ from api.auth import (
     get_admin_from_cookie,
     get_user_from_cookie,
     get_user_from_token,
+    set_auth_cookie,
 )
 from api.config import (
     AUTH_COOKIE,
@@ -60,6 +61,18 @@ async def csrf_protect_exception_handler(
     request: Request, exc: CsrfProtectError
 ) -> JSONResponse:
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.message})
+
+
+@app.middleware("http")
+async def refresh_auth_cookie(
+    request: Request, call_next: Callable[[Request], Awaitable[Response]]
+) -> Response:
+    """Set the renewed login token that `get_optional_user_from_cookie` left on the request."""
+    response = await call_next(request)
+    token = getattr(request.state, "refreshed_auth_token", None)
+    if token:
+        set_auth_cookie(response, token)
+    return response
 
 
 @app.middleware("http")
